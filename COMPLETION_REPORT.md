@@ -63,7 +63,7 @@
 
 普通版位于 release/v1.0.0/apps/normal，Demo 位于 release/v1.0.0/apps/demo。下载压缩包与 SHA-256 清单在同一版本目录。源码、锁文件、测试和必要合成输入受版本控制，运行数据库不进入仓库或安装包。
 
-本地下载包已完成解压、严格签名与内容复核。GitHub 发布尚未完成：CLI 设备授权过期且未保存凭据，T-032 等待实时授权后上传；README 中的 GitHub 地址为约定目标，不是已经上传的证据。
+本地下载包已完成解压、严格签名与内容复核。源码和 v1.0.0 标签已上传[公开仓库](https://github.com/Dr-xiaowei/ic-engineer-workbench)，双 ZIP 与 SHA-256 清单已上传[正式 Release](https://github.com/Dr-xiaowei/ic-engineer-workbench/releases/tag/v1.0.0)。GitHub 附件状态均为 uploaded，服务端 SHA-256 与本地一致；最终发布交接见 T-032。
 
 清理对象是可重建依赖缓存、构建目录、临时渲染/测试导出、参考下载副本和 AppleDouble 元数据。原始项目资料、用户案例模板和用户既有运行数据不被删除；正式独立标识避免自动继承开发记录。开源依赖的法定版权署名保留，不属于用户个人信息。
 

@@ -4,7 +4,7 @@
 
 首个正式版本：**v1.0.0**。采用 [MIT 许可证](LICENSE)。本项目不集成具体 EDA 工具，不替代工程签核。
 
-当前本地交付已准备完成；GitHub 上传正在等待账户授权，以下 Releases 地址在上传完成前可能尚不可用。
+源码与双版本下载包已公开发布：[v1.0.0 下载页](https://github.com/Dr-xiaowei/ic-engineer-workbench/releases/tag/v1.0.0)。
 
 ## 下载与快速使用
 
