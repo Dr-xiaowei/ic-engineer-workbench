@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">芯智工作台图标</title>
+  <desc id="desc">深色圆角方形中的青蓝芯片与智能核心</desc>
+  <defs>
+    <linearGradient id="background" x1="52" y1="30" x2="452" y2="480" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#122D3A"/>
+      <stop offset="1" stop-color="#061018"/>
+    </linearGradient>
+    <linearGradient id="signal" x1="160" y1="144" x2="368" y2="374" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#78F3CF"/>
+      <stop offset="1" stop-color="#5A9EFF"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="10" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="url(#background)"/>
+  <rect x="18" y="18" width="476" height="476" rx="100" fill="none" stroke="#84EBD3" stroke-opacity=".14" stroke-width="4"/>
+  <g fill="none" stroke="url(#signal)" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="142" y="142" width="228" height="228" rx="62" stroke-width="18"/>
+    <path d="M202 104v38m54-38v38m54-38v38M202 370v38m54-38v38m54-38v38M104 202h38m-38 54h38m-38 54h38M370 202h38m-38 54h38m-38 54h38" stroke-width="16"/>
+    <path d="M202 274l34-34 31 31 52-58" stroke-width="20" filter="url(#glow)"/>
+  </g>
+  <circle cx="319" cy="213" r="13" fill="#7EF0D1"/>
+</svg>

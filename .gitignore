@@ -1,0 +1,43 @@
+# 操作系统和临时编辑文件
+.DS_Store
+._*
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# 本地配置与秘密；示例文件必须使用无秘密的占位值
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# 本地工程私有数据与生成结果，勿将真实工程资料存放在跟踪目录
+/data/local/
+/artifacts/
+/reference-sandbox/
+*.log
+
+# 常见依赖、缓存与构建输出；选定技术栈后按实际需要调整
+node_modules/
+/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+/dist/
+/build/
+/coverage/
+/.next/
+/.work/
+/release/
+**/.pnpm-store/
+**/dist/
+**/target/
+**/gen/
+*.tsbuildinfo
+/app/desktop/public/pdfjs/
+
+# IDE 的个人配置
+.idea/

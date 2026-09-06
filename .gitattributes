@@ -1,0 +1,8 @@
+*.pdf binary
+*.docx binary
+*.otf binary
+*.png binary
+*.ico binary
+*.icns binary
+# Preserve upstream notice formatting verbatim.
+app/desktop/src-tauri/assets/legal/THIRD_PARTY_LICENSES.txt -whitespace

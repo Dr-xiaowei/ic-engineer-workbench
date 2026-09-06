@@ -1,0 +1,45 @@
+{
+  "name": "ic-engineer-workbench-desktop",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "node scripts/prepare-pdf-assets.mjs && vite --host 127.0.0.1 --port 1420",
+    "build": "node scripts/prepare-pdf-assets.mjs && tsc -b && vite build",
+    "test": "vitest run",
+    "test:demo-model": "node --test ../../demo/mock-model-server.test.mjs",
+    "demo:model": "node ../../demo/mock-model-server.mjs",
+    "bundle:release": "node scripts/build-release.mjs",
+    "build:clickable": "node scripts/build-clickable-apps.mjs",
+    "verify:artifact": "node scripts/verify-release-artifact.mjs",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
+    "docx": "^9.7.1",
+    "pdfjs-dist": "^6.3.289",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-markdown": "^10.1.0",
+    "rehype-sanitize": "^6.0.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "esbuild": "^0.28.2",
+    "jsdom": "^30.0.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2",
+    "vitest": "^5.0.0"
+  }
+}

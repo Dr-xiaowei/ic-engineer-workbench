@@ -1,0 +1,10 @@
+node_modules/
+.pnpm-store/
+dist/
+src-tauri/target/
+._*
+**/._*
+*.log
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts

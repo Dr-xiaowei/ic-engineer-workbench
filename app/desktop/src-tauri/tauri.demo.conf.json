@@ -1,0 +1,27 @@
+{
+  "productName": "芯智工作台 Demo",
+  "identifier": "com.icengineer.workbench.demo",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "芯智工作台 Demo",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 980,
+        "minHeight": 680,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ]
+  },
+  "bundle": {
+    "resources": {
+      "../../../demo/README.md": "demo/README.md",
+      "../../../demo/ACCEPTANCE_CHECKLIST.md": "demo/ACCEPTANCE_CHECKLIST.md",
+      "../../../demo/sample-project": "demo/sample-project",
+      "../../../demo/sample-skill": "demo/sample-skill",
+      "../../../demo/samples": "demo/samples"
+    }
+  }
+}

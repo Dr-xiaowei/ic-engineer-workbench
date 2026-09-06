@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "芯智工作台",
+  "version": "1.0.0",
+  "identifier": "com.icengineer.workbench",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost blob: data:; worker-src 'self' blob:; frame-src 'none'; object-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost",
+      "capabilities": [
+        {
+          "identifier": "main",
+          "description": "主窗口仅使用 Tauri 核心与系统文件选择对话框；文件内容、数据库和网络由 Rust 类型化命令控制。",
+          "windows": ["main"],
+          "permissions": ["core:default", "dialog:default"]
+        }
+      ]
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "芯智工作台",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 980,
+        "minHeight": 680,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "resources": { "../../../LICENSE": "licenses/LICENSE", "../THIRD_PARTY_NOTICES.md": "licenses/THIRD_PARTY_NOTICES.md", "assets/legal": "licenses/dependencies", "assets/fonts/OFL.txt": "licenses/OFL.txt" },
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

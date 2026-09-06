@@ -1,0 +1,8 @@
+Synthetic AIC-101 verification notes
+
+Condition: VDD = 3.3 V, temperature = 25 °C, typical process.
+Bias current target: 10 uA, synthetic tolerance: ±5%.
+Startup settling time target: less than 20 us with a synthetic 10 pF load.
+
+Open item: repeat the startup check at the documented supply limits.
+This file contains demonstration data only and is not an EDA result.
