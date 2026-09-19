@@ -78,6 +78,10 @@ node scripts/package-downloads.mjs
 
 ## 项目资料与下一轮迭代
 
+查阅顺序：使用与下载看本文件；需求和正式发布约束看 PROJECT；待办与交接看 TASKS；验收证据看 COMPLETION_REPORT；开发过程与经验看复盘。CHANGELOG 只保留重要变化，细小修改不新增迭代记录。
+
+后续每个经用户明确确认的正式版本，均按 [PROJECT 发布规范](PROJECT.md) 上传到同一 GitHub 仓库统一管理；本次文档整理不改动已发布的 v1.0.0 标签和安装包。
+
 - [完成度与验收报告](COMPLETION_REPORT.md)：逐项功能、证据及限制。
 - [开发复盘与迭代建议](docs/RETROSPECTIVE.md)：本次经验、发现的问题与下一轮重点。
 - [项目案例 Markdown](docs/PROJECT_CASE.md) / [Word](docs/PROJECT_CASE.docx)：按实践模板整理，未虚构业务收益。
