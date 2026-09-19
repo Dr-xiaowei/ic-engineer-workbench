@@ -51,6 +51,8 @@ macOS 包采用 ad-hoc 本地签名，尚无 Apple Developer ID 公证。下载�
 
 本项目统一位于 `company-intranet-workbench/`，其中包含独立 `.git/`、`app/`、`demo/`、`docs/` 与 `release/`。后续其他平台使用同级目录，不共用本项目仓库。本文档中的路径均相对于本项目根目录。
 
+外层工作区的 PROJECT.md 和 AGENTS.md 管理通用开发规则；本平台的全部功能需求、技术与发布要求在本目录内维护。独立克隆本仓库时，按仓库内的管理文件即可继续工作，无需依赖外层文件。
+
 如果终端位于外层多项目工作区，先执行 `cd company-intranet-workbench`；如果已经打开本项目，直接进入 `app/desktop`。迁移不改变 GitHub 仓库地址、应用标识或系统运行数据位置。
 
 ### 安装与检查
