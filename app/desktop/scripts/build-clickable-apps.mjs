@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,7 +11,21 @@ if (process.platform !== "darwin") {
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(appRoot, "../..");
-const outputRoot = resolve(workspaceRoot, "release/v1.0.0/apps");
+const version = JSON.parse(readFileSync(resolve(appRoot, "package.json"), "utf8")).version;
+if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+  console.error("应用版本格式无效，无法确定安全的输出目录。");
+  process.exit(2);
+}
+const tauriVersion = JSON.parse(readFileSync(resolve(appRoot, "src-tauri/tauri.conf.json"), "utf8")).version;
+if (version !== tauriVersion) {
+  console.error("package.json 与 Tauri 配置版本不一致，请先对齐版本。");
+  process.exit(2);
+}
+const outputRoot = resolve(workspaceRoot, `release/v${version}/apps`);
+if (existsSync(outputRoot)) {
+  console.error(`拒绝覆盖已有应用产物：${outputRoot}。请为新迭代设置独立版本；日常检查使用调试构建。`);
+  process.exit(2);
+}
 const buildRoot = resolve(tmpdir(), "ic-workbench-clickable-build");
 
 const variants = [

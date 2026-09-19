@@ -47,6 +47,14 @@ macOS 包采用 ad-hoc 本地签名，尚无 Apple Developer ID 公证。下载�
 
 ## 从源码开发与构建
 
+### 本地多项目工作区
+
+本项目统一位于 `company-intranet-workbench/`，其中包含独立 `.git/`、`app/`、`demo/`、`docs/` 与 `release/`。后续其他平台使用同级目录，不共用本项目仓库。本文档中的路径均相对于本项目根目录。
+
+如果终端位于外层多项目工作区，先执行 `cd company-intranet-workbench`；如果已经打开本项目，直接进入 `app/desktop`。迁移不改变 GitHub 仓库地址、应用标识或系统运行数据位置。
+
+### 安装与检查
+
 需要 Node.js 22+、pnpm 11.19.0、Rust stable，以及目标平台的 Tauri 2 编译前提（macOS 需要 Xcode Command Line Tools）。依赖版本以两份锁文件为准。
 
 ```sh
@@ -73,6 +81,8 @@ node scripts/package-downloads.mjs
 ```
 
 双包位于 `release/v1.0.0/apps/normal/` 和 `release/v1.0.0/apps/demo/`。其他目标系统使用 `pnpm bundle:release` 并按照 Tauri 平台文档配置签名和打包；仓库不宣称未实测平台已可交付。
+
+双包构建目录按 `package.json` 中的版本号生成，若该目录已有产物则拒绝覆盖。后续迭代先在独立开发分支对齐应用版本和 Tauri 配置；确认新正式版本后按 [发布流程](PROJECT.md) 交付。日常源码验证使用 `pnpm tauri build --debug --no-bundle`，不重建历史正式包。
 
 开发 Demo 可运行 `ICWB_APP_MODE=demo pnpm tauri dev --config src-tauri/tauri.demo.conf.json`。仅协议测试需要的可选模拟服务为 `pnpm demo:model`，它只监听回环地址。正常 Demo 不需要另开模型服务。
 
