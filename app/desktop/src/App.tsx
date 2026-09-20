@@ -83,6 +83,29 @@ const navigationItems: Array<{
   { id: "software", label: "常用软件", icon: "⌘" },
 ];
 
+const navigationGroups: Array<{ label: string; ids: NavigationId[] }> = [
+  { label: "工作空间", ids: ["dashboard", "chat", "projects", "calendar", "mail"] },
+  { label: "资料与知识", ids: ["datasheet", "knowledge", "skills", "converter"] },
+  { label: "常用工具", ids: ["calculator", "software"] },
+];
+
+function NavigationIcon({ id }: { id: NavigationId }) {
+  const paths: Record<NavigationId, string> = {
+    dashboard: "M3 10 12 3l9 7M5 9v12h5v-7h4v7h5V9",
+    chat: "M4 4h16v12H9l-5 4V4Z",
+    projects: "M3 6h7l2 3h9v11H3V6Z",
+    calendar: "M4 5h16v16H4V5Zm0 5h16M8 3v4m8-4v4M8 14h2m4 0h2m-8 3h2",
+    mail: "M3 5h18v14H3V5Zm0 1 9 7 9-7",
+    datasheet: "M6 3h8l4 4v14H6V3Zm8 0v5h4M9 12h6m-6 4h6",
+    knowledge: "M3 4h7l2 2 2-2h7v16h-7l-2 1-2-1H3V4Zm9 2v15",
+    skills: "m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Z",
+    converter: "M4 7h15l-4-4m4 4-4 4M20 17H5l4 4m-4-4 4-4",
+    calculator: "M5 3h14v18H5V3Zm3 4h8M8 12h2m4 0h2m-8 4h2m4 0h2",
+    software: "M3 3h7v7H3V3Zm11 0h7v7h-7V3ZM3 14h7v7H3v-7Zm11 0h7v7h-7v-7Z",
+  };
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[id]} /></svg>;
+}
+
 const modules: Record<Exclude<NavigationId, "dashboard">, ModuleDefinition> = {
   chat: {
     title: "智能对话",
@@ -204,9 +227,9 @@ function SettingsPanel({
   }
 
   async function backupData() {
-    const path = await saveDialog({ defaultPath: "ic-workbench-backup.icwb", filters: [{ name: "工作台备份", extensions: ["icwb"] }] });
-    if (!path) return;
     try {
+      const path = await saveDialog({ defaultPath: "ic-workbench-backup.icwb", filters: [{ name: "工作台备份", extensions: ["icwb"] }] });
+      if (!path) return;
       const uiStateJson = JSON.stringify({
         preferencesJson: window.localStorage.getItem(preferencesStorageKey) ?? "",
         modelEndpointsJson: window.localStorage.getItem(modelEndpointsStorageKey) ?? "",
@@ -218,10 +241,12 @@ function SettingsPanel({
   }
 
   async function chooseRestore() {
-    const path = await openDialog({ multiple: false, directory: false, filters: [{ name: "工作台备份", extensions: ["icwb"] }] });
-    if (typeof path !== "string") return;
-    setRestorePath(path);
-    setDataNotice("已选择备份。再次点击“确认恢复”将替换当前本地数据库；凭据不会恢复，网络总开关会关闭。");
+    try {
+      const path = await openDialog({ multiple: false, directory: false, filters: [{ name: "工作台备份", extensions: ["icwb"] }] });
+      if (typeof path !== "string") return;
+      setRestorePath(path);
+      setDataNotice("已选择备份。再次点击“确认恢复”将替换当前本地数据库；凭据不会恢复，网络总开关会关闭。");
+    } catch { setDataNotice("无法打开备份选择器，请重试。现有本地数据未被修改。"); }
   }
 
   async function restoreData() {
@@ -229,8 +254,8 @@ function SettingsPanel({
     try {
       const uiStateJson = await invoke<string>("restore_local_data", { path: restorePath, confirmed: true });
       const restored = JSON.parse(uiStateJson) as { preferencesJson?: unknown; modelEndpointsJson?: unknown; outputDirectory?: unknown };
-      if (typeof restored.preferencesJson === "string" && restored.preferencesJson) window.localStorage.setItem(preferencesStorageKey, restored.preferencesJson);
-      if (typeof restored.modelEndpointsJson === "string" && restored.modelEndpointsJson) window.localStorage.setItem(modelEndpointsStorageKey, restored.modelEndpointsJson);
+      if (typeof restored.preferencesJson === "string") window.localStorage.setItem(preferencesStorageKey, restored.preferencesJson);
+      if (typeof restored.modelEndpointsJson === "string") window.localStorage.setItem(modelEndpointsStorageKey, restored.modelEndpointsJson);
       if (typeof restored.outputDirectory === "string" && restored.outputDirectory.length <= 4096) window.localStorage.setItem("ic-workbench-output-directory-v1", restored.outputDirectory);
       onPreferencesChange(loadPreferences());
       setRestorePath(""); onNetworkAccessChange(false);
@@ -515,21 +540,27 @@ function App() {
           <span className="brand-mark">IC</span>
           <span>
             <strong>芯智工作台{runtime?.demoMode ? " Demo" : ""}</strong>
-            <small>{runtime?.demoMode ? "SAFE SYNTHETIC DEMO" : "ENGINEER CONSOLE"}</small>
+            <small>{runtime?.demoMode ? "独立演示空间" : "本地工程空间"}</small>
           </span>
         </button>
 
         <nav aria-label="主导航">
-          {navigationItems.map((item) => (
+          {navigationGroups.map((group) => (
+            <section className="nav-group" aria-label={group.label} key={group.label}>
+              <p className="nav-group-label">{group.label}</p>
+              {group.ids.map((id) => navigationItems.find((item) => item.id === id)!).map((item) => (
             <button
               className={activeId === item.id ? "active" : ""}
+              aria-current={activeId === item.id ? "page" : undefined}
               key={item.id}
               type="button"
               onClick={() => setActiveId(item.id)}
             >
-              <span className="nav-icon" aria-hidden="true">{item.icon}</span>
+              <span className="nav-icon"><NavigationIcon id={item.id} /></span>
               {item.label}
             </button>
+              ))}
+            </section>
           ))}
         </nav>
 
@@ -576,26 +607,18 @@ function App() {
             <article className="hero-panel">
               <div className="hero-copy">
                 <p className="eyebrow">{runtime?.demoMode ? "SYNTHETIC DATA · EMBEDDED MODEL" : "OFFLINE-FIRST · SECURE BY DESIGN"}</p>
-                <h2 id="dashboard-title">专注工程判断，繁琐工作交给本地助手。</h2>
+                <h2 id="dashboard-title">从这里，开始今天的工作。</h2>
                 <p>
                   {runtime?.demoMode
                     ? "当前为独立 Demo：仅使用合成资料和内置确定性模型；开启受控内网开关后即可演示对话，结果不用于工程结论。"
                     : "面向 IC 工程师的本地桌面工作台。资料、项目与工作流留在内网，关键操作始终由你确认。"}
                 </p>
               </div>
-              <div className="chip-visual" aria-hidden="true">
-                <div className="chip-core">AI</div>
-                <span className="trace trace-a" />
-                <span className="trace trace-b" />
-                <span className="trace trace-c" />
-                <span className="trace trace-d" />
-              </div>
             </article>
 
             <section className="section-block" aria-labelledby="quick-title">
               <div className="section-heading">
                 <div>
-                  <p className="eyebrow">QUICK START</p>
                   <h2 id="quick-title">快速开始</h2>
                 </div>
                 <span>选择一个工作入口</span>
@@ -616,27 +639,27 @@ function App() {
 
             <section className="status-grid" aria-label="运行状态">
               <article>
-                <span className="metric-label">APP CORE</span>
+                <span className="metric-label">应用版本</span>
                 <strong>{runtime?.appVersion ?? "checking"}</strong>
                 <p>桌面壳与前端界面</p>
               </article>
               <article>
-                <span className="metric-label">DATA LOCATION</span>
+                <span className="metric-label">数据位置</span>
                 <strong>{runtime?.dataLocation ?? "checking"}</strong>
                 <p>运行数据边界</p>
               </article>
               <article>
-                <span className="metric-label">NETWORK MODE</span>
+                <span className="metric-label">网络模式</span>
                 <strong>{networkAccess ? "INTRANET" : runtime?.networkMode ?? "checking"}</strong>
                 <p>{networkAccess ? "受控内网已启用" : "默认拒绝网络访问"}</p>
               </article>
               <article>
-                <span className="metric-label">MODEL ENDPOINTS</span>
+                <span className="metric-label">可用配置</span>
                 <strong>{loadModelEndpoints().filter((endpoint) => endpoint.enabled).length}</strong>
                 <p>已启用的本地/内网模型</p>
               </article>
               <article>
-                <span className="metric-label">MAIL CACHE</span>
+                <span className="metric-label">邮件缓存</span>
                 <strong>{dashboard ? `${dashboard.mailAccountCount} / ${dashboard.cachedMailCount}` : "—"}</strong>
                 <p>账户 / 本地邮件</p>
               </article>

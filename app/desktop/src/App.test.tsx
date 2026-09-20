@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import App from "./App";
 import { modelEndpointsStorageKey } from "./model-config";
 import { clearVerifiedEndpoints, markEndpointVerified } from "./model-session";
@@ -49,6 +49,48 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "工作台", level: 1 })).toBeInTheDocument();
     expect(screen.getByText("完全离线")).toBeInTheDocument();
     expect(screen.getByText(/资料、项目与工作流留在内网/)).toBeInTheDocument();
+  });
+
+  it("keeps all eleven destinations reachable in grouped navigation", () => {
+    render(<App />);
+    const navigation = screen.getByRole("navigation", { name: "主导航" });
+    expect(within(navigation).getAllByRole("button")).toHaveLength(11);
+    for (const group of ["工作空间", "资料与知识", "常用工具"]) {
+      expect(within(navigation).getByRole("region", { name: group })).toBeInTheDocument();
+    }
+    for (const name of ["工作台", "智能对话", "项目管理", "Datasheet", "知识笔记", "Skills", "格式转换", "邮件助手", "日历与待办", "科学计算器", "常用软件"]) {
+      const button = within(navigation).getByRole("button", { name });
+      fireEvent.click(button);
+      expect(screen.getByRole("heading", { name, level: 1 })).toBeInTheDocument();
+      expect(button).toHaveAttribute("aria-current", "page");
+      expect(navigation.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
+    }
+    expect(invokeMock.mock.calls.some(([command]) => ["set_network_access", "send_mail", "launch_software"].includes(command))).toBe(false);
+  });
+
+  it("preserves dashboard shortcuts and all runtime information", () => {
+    render(<App />);
+    for (const label of ["应用版本", "数据位置", "网络模式", "可用配置", "邮件缓存"]) {
+      expect(screen.getByText(label)).toBeInTheDocument();
+    }
+    for (const [shortcut, destination] of [["新建对话", "智能对话"], ["导入资料", "Datasheet"], ["管理项目", "项目管理"]]) {
+      fireEvent.click(within(screen.getByRole("region", { name: "快速开始" })).getByRole("button", { name: new RegExp(shortcut) }));
+      expect(screen.getByRole("heading", { name: destination, level: 1 })).toBeInTheDocument();
+      fireEvent.click(within(screen.getByRole("navigation", { name: "主导航" })).getByRole("button", { name: "工作台" }));
+    }
+  });
+
+  it("keeps persisted theme and the calculator empty when navigating back", () => {
+    window.localStorage.setItem(preferencesStorageKey, JSON.stringify({ theme: "light", displayName: "本地工作区", avatarDataUrl: "" }));
+    render(<App />);
+    expect(document.documentElement.dataset.theme).toBe("light");
+    const navigation = screen.getByRole("navigation", { name: "主导航" });
+    fireEvent.click(within(navigation).getByRole("button", { name: "科学计算器" }));
+    fireEvent.change(screen.getByLabelText("科学计算表达式"), { target: { value: "2+3" } });
+    fireEvent.click(within(navigation).getByRole("button", { name: "工作台" }));
+    fireEvent.click(within(navigation).getByRole("button", { name: "科学计算器" }));
+    expect(screen.getByLabelText("科学计算表达式")).toHaveValue("");
+    expect(document.documentElement.dataset.theme).toBe("light");
   });
 
   it("initializes the independent demo with its embedded model", async () => {
@@ -114,6 +156,87 @@ describe("App", () => {
 
     expect(screen.queryByRole("dialog", { name: "工作台设置" })).not.toBeInTheDocument();
     expect(screen.getByText("模拟 IC 工程师")).toBeInTheDocument();
+  });
+
+  it("cancels backup selection without changing data", async () => {
+    dialogOpenMock.mockResolvedValue(null);
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: /本地工作区设置/ }));
+    fireEvent.click(screen.getByRole("button", { name: "选择备份恢复" }));
+    await waitFor(() => expect(dialogOpenMock).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("button", { name: "确认恢复并替换" })).not.toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([command]) => command === "restore_local_data")).toBe(false);
+  });
+
+  it("restores preferences only after confirmation and returns to offline mode", async () => {
+    dialogOpenMock.mockResolvedValue("/synthetic/backup.icwb");
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "get_network_access") return Promise.resolve(true);
+      if (command === "list_audit_events") return Promise.resolve([]);
+      if (command === "restore_local_data") return Promise.resolve(JSON.stringify({
+        preferencesJson: JSON.stringify({ displayName: "已恢复工作区", theme: "light", avatarDataUrl: "" }),
+        modelEndpointsJson: "[]",
+        outputDirectory: "/synthetic/export",
+      }));
+      return new Promise(() => undefined);
+    });
+    render(<App />);
+    await screen.findByText("受控内网");
+    fireEvent.click(screen.getByRole("button", { name: /本地工作区设置/ }));
+    fireEvent.click(screen.getByRole("button", { name: "选择备份恢复" }));
+    const confirm = await screen.findByRole("button", { name: "确认恢复并替换" });
+    expect(invokeMock.mock.calls.some(([command]) => command === "restore_local_data")).toBe(false);
+    fireEvent.click(confirm);
+    await screen.findByText(/本地数据恢复完成/);
+    expect(invokeMock).toHaveBeenCalledWith("restore_local_data", { path: "/synthetic/backup.icwb", confirmed: true });
+    expect(screen.getByText("完全离线")).toBeInTheDocument();
+    expect(screen.getByLabelText("显示名称")).toHaveValue("已恢复工作区");
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(window.localStorage.getItem("ic-workbench-output-directory-v1")).toBe("/synthetic/export");
+  });
+
+  it("keeps current preferences when a backup fails validation", async () => {
+    dialogOpenMock.mockResolvedValue("/synthetic/invalid.icwb");
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "list_audit_events") return Promise.resolve([]);
+      if (command === "restore_local_data") return Promise.reject(new Error("invalid backup"));
+      return new Promise(() => undefined);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: /本地工作区设置/ }));
+    fireEvent.change(screen.getByLabelText("显示名称"), { target: { value: "原工作区" } });
+    const previous = window.localStorage.getItem(preferencesStorageKey);
+    fireEvent.click(screen.getByRole("button", { name: "选择备份恢复" }));
+    fireEvent.click(await screen.findByRole("button", { name: "确认恢复并替换" }));
+    await screen.findByText(/恢复失败/);
+    expect(window.localStorage.getItem(preferencesStorageKey)).toBe(previous);
+    expect(screen.getByLabelText("显示名称")).toHaveValue("原工作区");
+  });
+
+  it("reports a failed native backup picker without attempting a restore", async () => {
+    dialogOpenMock.mockRejectedValue(new Error("native dialog unavailable"));
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: /本地工作区设置/ }));
+    fireEvent.click(screen.getByRole("button", { name: "选择备份恢复" }));
+    await screen.findByText(/无法打开备份选择器/);
+    expect(invokeMock.mock.calls.some(([command]) => command === "restore_local_data")).toBe(false);
+  });
+
+  it("clears current configuration when the confirmed backup contains empty configuration", async () => {
+    dialogOpenMock.mockResolvedValue("/synthetic/empty.icwb");
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "restore_local_data") return Promise.resolve(JSON.stringify({ preferencesJson: "", modelEndpointsJson: "", outputDirectory: "" }));
+      return new Promise(() => undefined);
+    });
+    window.localStorage.setItem(modelEndpointsStorageKey, '[{"id":"stale-endpoint"}]');
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: /本地工作区设置/ }));
+    fireEvent.change(screen.getByLabelText("显示名称"), { target: { value: "不应遗留" } });
+    fireEvent.click(screen.getByRole("button", { name: "选择备份恢复" }));
+    fireEvent.click(await screen.findByRole("button", { name: "确认恢复并替换" }));
+    await screen.findByText(/本地数据恢复完成/);
+    expect(screen.getByLabelText("显示名称")).toHaveValue("本地工作区");
+    expect(window.localStorage.getItem(modelEndpointsStorageKey)).toBe("");
   });
 
   it("requires an explicit settings action to enable controlled intranet access", async () => {

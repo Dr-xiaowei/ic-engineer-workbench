@@ -1,6 +1,6 @@
 [package]
 name = "ic-engineer-workbench"
-version = "1.0.0"
+version = "1.0.1"
 description = "面向模拟 IC 研发人员的本地 AI 工作台"
 authors = ["IC Engineer Workbench Contributors"]
 edition = "2021"

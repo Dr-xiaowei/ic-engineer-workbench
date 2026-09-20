@@ -513,6 +513,20 @@ pub fn restore_local_data(
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|_| "所选文件不是可读取的 SQLite 工作台备份。".to_string())?;
+    let mut destination = open_database(&app)?;
+    let result = restore_with_connections(&source, &mut destination);
+    record_audit(
+        &app,
+        "data.restore",
+        if result.is_ok() { "success" } else { "failed" },
+    );
+    result
+}
+
+fn restore_with_connections(
+    source: &Connection,
+    destination: &mut Connection,
+) -> Result<String, String> {
     let version = source
         .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
         .map_err(|_| "无法读取备份版本。".to_string())?;
@@ -538,30 +552,44 @@ pub fn restore_local_data(
             return Err("备份缺少必要的工作台数据表。".to_string());
         }
     }
-    let mut destination = open_database(&app)?;
+    let mut staged = Connection::open("").map_err(|_| "无法创建恢复校验副本。".to_string())?;
     {
-        let backup = rusqlite::backup::Backup::new(&source, &mut destination)
+        let backup = rusqlite::backup::Backup::new(source, &mut staged)
             .map_err(|_| "无法开始恢复本地数据。".to_string())?;
         backup
             .run_to_completion(64, Duration::from_millis(20), None)
             .map_err(|_| "本地数据恢复未能完成。".to_string())?;
     }
-    destination
+    initialize(&staged)?;
+    staged
         .execute(
             "INSERT INTO app_settings(key,value) VALUES('network_access_enabled','false')
              ON CONFLICT(key) DO UPDATE SET value='false',updated_at=unixepoch()",
             [],
         )
-        .map_err(|_| "数据已恢复，但无法重置网络总开关。".to_string())?;
-    initialize(&destination)?;
-    let ui_state = destination
+        .map_err(|_| "备份无法安全重置网络总开关。".to_string())?;
+    let ui_state = staged
         .query_row(
             "SELECT value FROM app_settings WHERE key='ui_backup_state'",
             [],
             |row| row.get::<_, String>(0),
         )
         .unwrap_or_else(|_| "{}".to_string());
-    record_audit(&app, "data.restore", "success");
+    if ui_state.len() > 3 * 1024 * 1024
+        || !serde_json::from_str::<serde_json::Value>(&ui_state)
+            .is_ok_and(|value| value.is_object())
+    {
+        return Err("备份中的界面配置无效。".to_string());
+    }
+    // Validate and migrate a disposable copy before replacing the working database.
+    // The committed copy already has networking disabled.
+    {
+        let backup = rusqlite::backup::Backup::new(&staged, destination)
+            .map_err(|_| "无法开始恢复本地数据。".to_string())?;
+        backup
+            .run_to_completion(64, Duration::from_millis(20), None)
+            .map_err(|_| "本地数据恢复未能完成。".to_string())?;
+    }
     Ok(ui_state)
 }
 
@@ -922,6 +950,149 @@ mod tests {
 
         let loaded = load_with_connection(&connection).expect("conversation should load");
         assert_eq!(loaded, vec![conversation("流式完成")]);
+    }
+
+    #[test]
+    fn restore_preserves_data_and_disables_network_without_modifying_backup() {
+        let mut source = Connection::open_in_memory().unwrap();
+        initialize(&source).unwrap();
+        save_with_connection(&mut source, &conversation_with_attachment()).unwrap();
+        source
+            .execute_batch(
+                "INSERT INTO app_settings(key,value) VALUES
+            ('network_access_enabled','true'),('ui_backup_state','{\"preferencesJson\":\"{}\"}');",
+            )
+            .unwrap();
+        let mut destination = Connection::open_in_memory().unwrap();
+        initialize(&destination).unwrap();
+        save_with_connection(&mut destination, &conversation("替换前的合成数据")).unwrap();
+        assert_eq!(
+            restore_with_connections(&source, &mut destination).unwrap(),
+            "{\"preferencesJson\":\"{}\"}"
+        );
+        assert_eq!(
+            load_with_connection(&destination).unwrap(),
+            vec![conversation_with_attachment()]
+        );
+        for (db, expected) in [(&source, "true"), (&destination, "false")] {
+            assert_eq!(
+                db.query_row(
+                    "SELECT value FROM app_settings WHERE key='network_access_enabled'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            destination
+                .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+    }
+
+    #[test]
+    fn invalid_backup_never_replaces_existing_data() {
+        let mut destination = Connection::open_in_memory().unwrap();
+        initialize(&destination).unwrap();
+        save_with_connection(&mut destination, &conversation("必须保留")).unwrap();
+        for defect in [
+            "future-version",
+            "missing-table",
+            "invalid-settings",
+            "invalid-ui",
+        ] {
+            let source = Connection::open_in_memory().unwrap();
+            initialize(&source).unwrap();
+            match defect {
+                "future-version" => source
+                    .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+                    .unwrap(),
+                "missing-table" => source.execute_batch("DROP TABLE skills;").unwrap(),
+                "invalid-settings" => source
+                    .execute_batch(
+                        "DROP TABLE app_settings; CREATE TABLE app_settings(broken TEXT);",
+                    )
+                    .unwrap(),
+                "invalid-ui" => source
+                    .execute_batch(
+                        "INSERT INTO app_settings(key,value) VALUES('ui_backup_state','not-json');",
+                    )
+                    .unwrap(),
+                _ => unreachable!(),
+            }
+            assert!(
+                restore_with_connections(&source, &mut destination).is_err(),
+                "{defect}"
+            );
+            assert_eq!(
+                load_with_connection(&destination).unwrap(),
+                vec![conversation("必须保留")],
+                "{defect}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires ICWB_QA_BACKUP pointing to an explicitly selected synthetic UI export"]
+    fn restores_exported_synthetic_backup_in_isolation() {
+        let path = std::env::var("ICWB_QA_BACKUP").expect("select a synthetic .icwb export");
+        let path = validate_backup_path(&path, true).unwrap();
+        let source_bytes = fs::read(&path).unwrap();
+        let source =
+            Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let mut destination = Connection::open("").unwrap();
+        initialize(&destination).unwrap();
+        let ui_state = restore_with_connections(&source, &mut destination).unwrap();
+        assert!(serde_json::from_str::<serde_json::Value>(&ui_state)
+            .unwrap()
+            .is_object());
+        for table in [
+            "conversations",
+            "messages",
+            "attachments",
+            "document_attachments",
+            "projects",
+            "skills",
+            "mail_accounts",
+            "notes",
+            "calendar_tasks",
+            "project_progress_history",
+            "software_launchers",
+        ] {
+            let sql = format!("SELECT COUNT(*) FROM {table}");
+            let count =
+                |db: &Connection| db.query_row(&sql, [], |row| row.get::<_, i64>(0)).unwrap();
+            assert_eq!(count(&source), count(&destination), "{table}");
+        }
+        assert_eq!(
+            load_with_connection(&source).unwrap(),
+            load_with_connection(&destination).unwrap()
+        );
+        assert_eq!(
+            destination
+                .query_row(
+                    "SELECT value FROM app_settings WHERE key='network_access_enabled'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            "false"
+        );
+        assert_eq!(
+            destination
+                .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+        assert!(!destination
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .exists([])
+            .unwrap());
+        assert_eq!(fs::read(path).unwrap(), source_bytes);
     }
 
     #[test]
