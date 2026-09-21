@@ -2,13 +2,13 @@
 
 面向模拟 IC 研发人员的本地 AI 工作台。集中管理项目资料、Datasheet、个人笔记、进度、待办和邮件；普通版默认离线，AI 使用用户自行配置的本地或内网 OpenAI 兼容服务。
 
-首个正式版本：**v1.0.0**。采用 [MIT 许可证](LICENSE)。本项目不集成具体 EDA 工具，不替代工程签核。
+当前正式版本：**v1.0.1**。采用 [MIT 许可证](LICENSE)。本项目不集成具体 EDA 工具，不替代工程签核。
 
-源码与双版本下载包已公开发布：[v1.0.0 下载页](https://github.com/Dr-xiaowei/ic-engineer-workbench/releases/tag/v1.0.0)。
+源码与双版本下载包已公开发布：[v1.0.1 下载页](https://github.com/Dr-xiaowei/ic-engineer-workbench/releases/tag/v1.0.1)。
 
 ## 下载与快速使用
 
-前往本仓库的 [Releases](https://github.com/Dr-xiaowei/ic-engineer-workbench/releases) 下载 `ic-workbench-v1.0.0-macos-arm64.zip` 或 `ic-workbench-demo-v1.0.0-macos-arm64.zip`。不要把 GitHub 自动生成的 Source code 压缩包当作已编译应用。
+前往本仓库的 [Releases](https://github.com/Dr-xiaowei/ic-engineer-workbench/releases) 下载 `ic-workbench-v1.0.1-macos-arm64.zip` 或 `ic-workbench-demo-v1.0.1-macos-arm64.zip`。不要把 GitHub 自动生成的 Source code 压缩包当作已编译应用。
 
 1. 本次预编译包适用于 Apple Silicon Mac；其他平台需在目标系统自行构建和验收。下载后用 `shasum -a 256 文件名.zip` 与发布页的 `SHA256SUMS.txt` 比较。
 2. 解压，将“芯智工作台.app”拖入个人 Applications 或其他可写目录，双击图标启动。Demo 是独立应用，演示资料随包集中放在“演示资料”目录；无需安装 Node 或 Rust。
@@ -18,13 +18,13 @@
 
 macOS 包采用 ad-hoc 本地签名，尚无 Apple Developer ID 公证。下载后的 Gatekeeper 提示和公司终端策略可能阻止直接打开；请先验证来源与校验和，按组织批准的方式放行或从源码构建。不要全局关闭系统安全保护。此限制不同于应用自身能否启动。
 
-## 本地界面优化预览（未发布）
+## v1.0.1 验收与交付
 
-本轮优化视觉布局并修复验收发现的问题，保留以下全部功能。已构建的本地预览位于 `artifacts/ui-preview/normal/芯智工作台 界面预览.app` 和 `artifacts/ui-preview/demo/芯智工作台 Demo 界面预览.app`，可在 Finder 双击打开；该目录不进入 Git，也不是 Releases 下载内容。
+本轮整理导航、双主题、最小窗口布局，并修复日历待办可访问性、删除失败反馈和备份恢复安全问题。51 项前端、32 项 Rust、4 项 Demo 协议和 1 项实际合成备份恢复检查通过；双版真实恢复、恢复后离线、图文导出/映射、批量异常转换及 Demo 模型已实测。
 
-2026-09-21 已更新预览，包含导航、待办、弹窗、短窗口及恢复安全修复，以 980×680 启动供验收。51 项前端、32 项 Rust 和指定合成备份恢复检查通过；双版真实恢复、恢复后离线、图文导出/映射、批量异常转换及 Demo 模型已实测。1.0.1 优化交付候选、双 ZIP 和 SHA-256 已在 release/v1.0.1 准备好并通过签名/隐私检查，尚待解锁后的最后启动检查与发布核对，旧正式版保留，详见完成度报告。
+普通版与 Demo 优化包的启动、退出重启、独立初态及随包 PDF 检查通过。源码标签、发布说明和三项附件已在 GitHub 核对，服务端 SHA-256 与本地一致；补充下载因超时未完成。本地 v1.0.0 应用和 ZIP 已按授权删除，运行数据、备份、Git 及远端历史保留。完整证据和外部环境限制见 [完成度报告](COMPLETION_REPORT.md)。
 
-预览分别使用 `com.icengineer.workbench.preview` 与 `com.icengineer.workbench.preview.demo`，不读取正式版数据库；普通预览为空白工作区，Demo 使用合成资料。两包为本地 ad-hoc 签名的调试构建，未公证、未做正式包开发路径净化，不应对外分发；预览内部版本字段仍为构建时的 1.0.0，不代表新的正式发行。正式版仍使用上方下载入口。验证范围与待复核项见 [完成度报告](COMPLETION_REPORT.md)。
+本地 `artifacts/ui-preview/` 仅保留验收使用的独立调试预览，内部版本仍为 1.0.0；分发请使用上方 v1.0.1 正式下载入口。
 
 ## 功能
 
@@ -90,7 +90,7 @@ pnpm build:clickable
 node scripts/package-downloads.mjs
 ```
 
-双包位于 `release/v1.0.0/apps/normal/` 和 `release/v1.0.0/apps/demo/`。其他目标系统使用 `pnpm bundle:release` 并按照 Tauri 平台文档配置签名和打包；仓库不宣称未实测平台已可交付。
+双包位于 `release/v1.0.1/apps/normal/` 和 `release/v1.0.1/apps/demo/`。其他目标系统使用 `pnpm bundle:release` 并按照 Tauri 平台文档配置签名和打包；仓库不宣称未实测平台已可交付。
 
 双包构建目录按 `package.json` 中的版本号生成，若该目录已有产物则拒绝覆盖。后续迭代先在独立开发分支对齐应用版本和 Tauri 配置；确认新正式版本后按 [发布流程](PROJECT.md) 交付。日常源码验证使用 `pnpm tauri build --debug --no-bundle`，不重建历史正式包。
 
@@ -100,7 +100,7 @@ node scripts/package-downloads.mjs
 
 查阅顺序：使用与下载看本文件；需求和正式发布约束看 PROJECT；待办与交接看 TASKS；验收证据看 COMPLETION_REPORT；开发过程与经验看复盘。CHANGELOG 只保留重要变化，细小修改不新增迭代记录。
 
-后续每个经用户明确确认的正式版本，均按 [PROJECT 发布规范](PROJECT.md) 上传到同一 GitHub 仓库统一管理；本次文档整理不改动已发布的 v1.0.0 标签和安装包。
+后续每个经用户明确确认的正式版本，均按 [PROJECT 发布规范](PROJECT.md) 上传到同一 GitHub 仓库统一管理；既有正式标签和远端安装包保持不变。
 
 - [完成度与验收报告](COMPLETION_REPORT.md)：逐项功能、证据及限制。
 - [开发复盘与迭代建议](docs/RETROSPECTIVE.md)：本次经验、发现的问题与下一轮重点。
