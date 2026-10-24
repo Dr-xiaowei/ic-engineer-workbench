@@ -64,6 +64,7 @@ jobs:
             artifacts/windows-validation/runs/**/*.log
             artifacts/windows-validation/runs/**/manifest.json
             artifacts/windows-validation/ci/*.json
+            artifacts/windows-validation/ci/*.log
             artifacts/windows-validation/ui/*.json
             artifacts/windows-validation/ui/*.log
             artifacts/windows-validation/ui/*.png
