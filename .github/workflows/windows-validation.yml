@@ -37,9 +37,14 @@ jobs:
         working-directory: app/desktop
         env:
           CARGO_NET_OFFLINE: 'true'
-        run: node scripts/build-windows.mjs --arch x64 --version 1.1.0-rc.1 --webview installed
+        run: |
+          node scripts/build-windows.mjs --arch x64 --version 1.1.0-rc.1 --webview installed
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node scripts/build-windows.mjs --arch x64 --version 1.1.0-rc.2 --webview installed
       - name: Scan preview installers before execution
         run: ./app/desktop/scripts/windows-scan.ps1 -Path artifacts/windows-preview -Log artifacts/windows-validation/ci/installers-scan.json
+      - name: Installed native UI, version upgrade and uninstall/reinstall data retention
+        run: ./app/desktop/scripts/windows-install-lifecycle.ps1
       - name: Preserve bounded evidence (no TLS private keys or personal databases)
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -51,6 +56,9 @@ jobs:
             artifacts/windows-validation/runs/**/*.log
             artifacts/windows-validation/runs/**/manifest.json
             artifacts/windows-validation/ci/*.json
+            artifacts/windows-validation/ui/*.json
+            artifacts/windows-validation/ui/*.log
+            artifacts/windows-validation/ui/*.png
       - name: Upload unaccepted preview candidates
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
