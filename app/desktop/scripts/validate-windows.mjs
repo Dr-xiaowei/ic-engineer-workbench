@@ -60,7 +60,8 @@ const run = (name, executable, parameters) => {
   manifest.checks.push(check);
   save();
   if (result.error || result.status !== 0) {
-    console.error(((result.stdout ?? "") + (result.stderr ?? "")).slice(-12000));
+    console.error((result.stdout ?? "").slice(-12000));
+    console.error((result.stderr ?? "").slice(-4000));
     throw new Error(`${name} failed; inspect its log.`);
   }
   console.log(`${name}: passed (${check.elapsedMs} ms)`);

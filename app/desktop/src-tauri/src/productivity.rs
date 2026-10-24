@@ -262,7 +262,10 @@ mod tests {
         let normal = path.to_str().unwrap().trim_start_matches(r"\\?\");
         let (document, _, location) = read_source(Some(normal)).unwrap();
         assert!(document.markdown.contains("10 µA"));
-        assert_eq!(location.unwrap(), path.canonicalize().unwrap().to_string_lossy());
+        assert_eq!(
+            location.unwrap(),
+            path.canonicalize().unwrap().to_string_lossy()
+        );
         assert!(crate::file_safety::unchanged_location(Path::new(normal), &path.canonicalize().unwrap()));
         assert!(!crate::file_safety::unchanged_location(&root.join("other.md"), &path.canonicalize().unwrap()));
         std::fs::remove_dir_all(root).unwrap();

@@ -53,7 +53,9 @@ try {
     // Inspect the uncompressed program. Scanning only a compressed installer misses embedded paths.
     run(join(appRoot, "scripts/verify-release-artifact.mjs"), [binary]);
     const bundles = join(targetDir, target, "release/bundle/nsis");
-    const installers = readdirSync(bundles).filter((file) => file.endsWith(".exe") && file.includes(options.version));
+    // A shared compilation directory can contain both variants at this version.
+    const expectedInstaller = `${name}_${options.version}_${options.arch}-setup.exe`;
+    const installers = readdirSync(bundles).filter((file) => file === expectedInstaller);
     if (installers.length !== 1) throw new Error(`预期一个当前版本安装包，实际 ${installers.length}`);
     const directory = join(output, mode);
     mkdirSync(directory);
