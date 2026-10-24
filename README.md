@@ -6,9 +6,9 @@
 
 源码与双版本下载包已公开发布：[v1.0.1 下载页](https://github.com/Dr-xiaowei/ic-engineer-workbench/releases/tag/v1.0.1)。
 
-## Windows 适配（开发中，尚未验收）
+## Windows 预览（通用自动验收通过，Win10 专项待验）
 
-Windows 构建与升级保护正在独立分支开发，尚无通过验收的 Windows 安装包。使用现有界面与功能，普通预览和 Demo 分开存储数据，不替换 macOS 正式版。构建、原生验收、升级恢复及环境状态见 [Windows 验证说明](docs/WINDOWS_VALIDATION.md)。
+Windows x64 普通版/Demo 的 `1.1.0-rc.2` 已通过 Windows Server 2022 的原生自动回归、安装后界面检查及预览版本升级/卸载重装的数据保留检查。[验证运行与候选下载](https://github.com/Dr-xiaowei/ic-engineer-workbench/actions/runs/40087540364)（Artifacts 保留至 2026-11-07，选择 rc.2 目录）。候选未签名，要求已安装 WebView2；Win10、普通用户/UAC、交互文件选择器、DPI 与真实模型仍待专项验收。普通预览与 Demo 分开存储数据，正式版仍为 v1.0.1。校验和、覆盖范围和实际结果见 [Windows 验证说明](docs/WINDOWS_VALIDATION.md)。
 
 ## 首轮四项升级 · 本地预览（2026-09-25）
 
