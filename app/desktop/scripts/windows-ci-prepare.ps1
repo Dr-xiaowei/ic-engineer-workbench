@@ -1,5 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path "$PSScriptRoot/../../..").Path
+$clang = & clang-cl --version
+if ($LASTEXITCODE) { throw 'Preinstalled LLVM clang-cl unavailable' }
 $work = Join-Path $root 'artifacts/windows-validation/ci'
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 $downloads = Join-Path $work 'downloads'
@@ -45,6 +47,6 @@ $bin = Join-Path $work 'bin'
 New-Item -ItemType Directory -Path $bin | Out-Null
 "@echo off`r`nnode `"$pnpm`" %*" | Set-Content "$bin/pnpm.cmd" -Encoding ascii
 $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-@{ pnpmUrl=$url; pnpmSha256=$hash; node=(& node --version); rust=(& rustc --version); image=$env:ImageVersion; runner=$env:RUNNER_OS } | ConvertTo-Json | Set-Content "$work/toolchain.json" -Encoding utf8
+@{ pnpmUrl=$url; pnpmSha256=$hash; node=(& node --version); clang=$clang; rust=(& rustc --version); image=$env:ImageVersion; runner=$env:RUNNER_OS } | ConvertTo-Json | Set-Content "$work/toolchain.json" -Encoding utf8
 python "$PSScriptRoot/prepare-windows-fixtures.py" --output "$work/fixtures"
 if ($LASTEXITCODE) { throw 'Fixture generation failed' }

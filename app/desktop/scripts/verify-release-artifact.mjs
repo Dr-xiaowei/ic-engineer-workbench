@@ -17,9 +17,10 @@ const forbiddenNames = [
   /^\.env(?:\.|$)/i,
   /\.(?:key|pem|p12|pfx)$/i,
 ];
-const forbiddenContent = [...new Set([homedir(), appRoot].flatMap((path) => [path, path.replaceAll("\\", "/")]))]
-  .filter((value) => value.length > 1)
-  .flatMap((value) => [Buffer.from(value, "utf8"), Buffer.from(value, "utf16le")]);
+const forbiddenContent = [["home", homedir()], ["workspace", appRoot]]
+  .filter(([, value]) => value.length > 1)
+  .flatMap(([kind, value]) => [...new Set([value, value.replaceAll("\\", "/")])]
+    .flatMap(path => ["utf8", "utf16le"].map(encoding => ({ kind, encoding, bytes: Buffer.from(path, encoding) }))));
 const failures = [];
 let fileCount = 0;
 
@@ -43,8 +44,12 @@ function inspect(path) {
 
   const content = readFileSync(path);
   for (const marker of forbiddenContent) {
-    if (content.includes(marker)) {
-      failures.push(`${path}: 含开发用户名或工作区绝对路径`);
+    const offset = content.indexOf(marker.bytes);
+    if (offset >= 0) {
+      // Report only a source-file basename, never the embedded personal path.
+      const fragment = content.subarray(offset, offset + 1024).toString(marker.encoding).split("\0")[0];
+      const source = fragment.match(/[/\\]([A-Za-z0-9_.-]+\.(?:c|cc|cpp|rs|h|pdb))(?=$|[^A-Za-z0-9_.])/);
+      failures.push(`${path}: 含开发用户名或工作区绝对路径 (${marker.kind}, ${marker.encoding}, offset ${offset}, source ${source?.[1]?.slice(0, 80) ?? "unknown"})`);
       break;
     }
   }

@@ -43,6 +43,14 @@ jobs:
           node scripts/build-windows.mjs --arch x64 --version 1.1.0-rc.2 --webview installed
       - name: Scan preview installers before execution
         run: ./app/desktop/scripts/windows-scan.ps1 -Path artifacts/windows-preview -Log artifacts/windows-validation/ci/installers-scan.json
+      - name: Upload unaccepted preview candidates
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-x64-preview-${{ github.run_id }}
+          retention-days: 14
+          if-no-files-found: error
+          path: artifacts/windows-preview/
       - name: Installed native UI, version upgrade and uninstall/reinstall data retention
         run: ./app/desktop/scripts/windows-install-lifecycle.ps1
       - name: Preserve bounded evidence (no TLS private keys or personal databases)
@@ -59,11 +67,3 @@ jobs:
             artifacts/windows-validation/ui/*.json
             artifacts/windows-validation/ui/*.log
             artifacts/windows-validation/ui/*.png
-      - name: Upload unaccepted preview candidates
-        if: success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: windows-x64-preview-${{ github.run_id }}
-          retention-days: 14
-          if-no-files-found: error
-          path: artifacts/windows-preview/
