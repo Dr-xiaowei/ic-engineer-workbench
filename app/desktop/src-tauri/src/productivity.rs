@@ -85,7 +85,7 @@ fn read_source(
         Some(path) => {
             let (canonical, bytes) = source_file(path)?;
             // Reject a replaced parent directory as well as a replaced leaf.
-            if canonical != Path::new(path) {
+            if !crate::file_safety::unchanged_location(Path::new(path), &canonical) {
                 return Err("原件路径发生变化或包含符号链接，请重新选择普通文件。".into());
             }
             let name = canonical
@@ -252,6 +252,21 @@ pub(crate) fn validate_citations(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn windows_file_picker_path_registers_evidence_without_verbatim_prefix() {
+        let root = std::env::temp_dir().join(format!("icwb-picker-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("中文 evidence.md");
+        std::fs::write(&path, "Iq=10 µA，TT，27°C").unwrap();
+        let normal = path.to_str().unwrap().trim_start_matches(r"\\?\");
+        let (document, _, location) = read_source(Some(normal)).unwrap();
+        assert!(document.markdown.contains("10 µA"));
+        assert_eq!(location.unwrap(), path.canonicalize().unwrap().to_string_lossy());
+        assert!(crate::file_safety::unchanged_location(Path::new(normal), &path.canonicalize().unwrap()));
+        assert!(!crate::file_safety::unchanged_location(&root.join("other.md"), &path.canonicalize().unwrap()));
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn original_version_and_missing_file_never_silently_rebind_citations() {
         let root = std::env::temp_dir().join(format!("icwb-source-test-{}", std::process::id()));

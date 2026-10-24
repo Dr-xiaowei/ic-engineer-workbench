@@ -311,3 +311,11 @@ T-040 调研完成后已获首轮四项实施确认，T-041 在独立分支修�
 - GPL/AGPL 等参考项目仅吸收公开产品思路；实际采用依赖的版本、许可和安全结论以本表、锁文件及随包许可证资料为准。
 - 最初的产品调研只读公开资料；后续实际采用依赖及发布工具的检查分别记录在对应行。该版参考下载副本和临时发布工具已清理，必要依赖资源与许可证继续保留。
 - 表中 Star 为各行调研日期的历史近似值，不代表当前数量或安全背书。“可离线”不等于“默认无外联”；新依赖仍需逐项审计，不以此前调研结论代替检查。
+
+## Windows 云端验证方案实施 · 2026-10-24
+
+已按确认方案复用 [GitHub Windows Server 2022 托管镜像](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md) 的 MSVC、Rust、Node 和 WebView2，以预装环境避开本地评估系统激活与工具目录校验阻塞。流水线仅给仓库读取权限，无个人凭据，锁定 checkout v4.2.2 与 upload-artifact v4.6.2 的官方提交；公开仓库标准 runner，无采购或自建系统镜像。
+
+原生界面采用 [Microsoft WebView2 调试接口](https://learn.microsoft.com/en-us/microsoft-edge/webview2/how-to/debug-visual-studio-code) 的子进程环境参数，仅向本机回环地址开放一次测试端口；Node 内置 WebSocket 驱动已安装的优化版，无新增产品依赖/调试插件，无 IPC mock。关闭应用后释放连接。与 [Tauri 官方 Windows CI](https://v2.tauri.app/develop/tests/webdriver/ci/) 的原生运行边界一致，但本项目使用 CDP 直接驱动，避免下载完整浏览器与另一套驱动。它验证真实 Windows WebView2/Rust 组合，不替代 Win10 实机或普通用户/UAC 检查。
+
+打包工具依据 [tauri-cli v2.11.4 的 NSIS 工具清单](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.11.4/crates/tauri-bundler/src/bundle/windows/nsis/mod.rs)：官方 nsis-3.11.zip SHA-256 `c7d27f780ddb6cffb4730138cd1591e841f4b7edb155856901cdf5f214394fa1`，nsis_tauri_utils v0.5.3 DLL `5ba143b5db4a87d32d6e7802e033330aae56cbceabe0d1e3ba41948385ad4709`，与 GitHub 资产摘要一致。先校验并扫描压缩包和展开内容，再填入临时 runner 缓存，防止打包器隐式下载后直接执行。未关闭系统保护、增加排除目录或导入测试根证书。

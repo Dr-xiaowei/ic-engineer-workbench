@@ -1,4 +1,38 @@
 use std::fs::Metadata;
+use std::path::Path;
+
+// canonicalize() adds a verbatim prefix on Windows. That representation change
+// does not mean the selected file moved. Keep comparing every actual component
+// so a replaced parent/junction still fails closed.
+pub(crate) fn unchanged_location(requested: &Path, canonical: &Path) -> bool {
+    #[cfg(not(windows))]
+    {
+        requested == canonical
+    }
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let mut a = requested.components();
+        let mut b = canonical.components();
+        let prefixes_match = match (a.next(), b.next()) {
+            (Some(Component::Prefix(a)), Some(Component::Prefix(b))) => {
+                match (a.kind(), b.kind()) {
+                    (
+                        Prefix::Disk(a) | Prefix::VerbatimDisk(a),
+                        Prefix::Disk(b) | Prefix::VerbatimDisk(b),
+                    ) => a.eq_ignore_ascii_case(&b),
+                    (
+                        Prefix::UNC(a, x) | Prefix::VerbatimUNC(a, x),
+                        Prefix::UNC(b, y) | Prefix::VerbatimUNC(b, y),
+                    ) => a == b && x == y,
+                    _ => false,
+                }
+            }
+            _ => false,
+        };
+        prefixes_match && a.eq(b)
+    }
+}
 
 pub(crate) fn is_link(metadata: &Metadata) -> bool {
     #[cfg(windows)]

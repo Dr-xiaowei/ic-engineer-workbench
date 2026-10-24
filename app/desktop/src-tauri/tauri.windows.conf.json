@@ -4,7 +4,7 @@
     "targets": ["nsis"],
     "windows": {
       "allowDowngrades": false,
-      "webviewInstallMode": { "type": "offlineInstaller", "silent": true },
+      "webviewInstallMode": { "type": "offlineInstaller" },
       "nsis": {
         "installMode": "currentUser",
         "languages": ["SimpChinese", "English"],

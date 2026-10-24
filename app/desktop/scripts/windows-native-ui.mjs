@@ -135,6 +135,8 @@ try {
       const source = join(resolve(fixtureDir), "中文 工程资料", "偏置 ZXW100.md");
       const before = hash(source);
       const document = await invoke("convert_document", { path: source });
+      const evidence = await invoke("register_review_source", { path: source });
+      assert(evidence.document.markdown.includes("ZXW100"));
       const destination = join(output, `${mode}-转换.pdf`);
       const args = { path: destination, format: "pdf", title: "合成偏置", body: document.markdown, formatted: null, sourcePaths: [source] };
       await invoke("export_converted_document", args);
