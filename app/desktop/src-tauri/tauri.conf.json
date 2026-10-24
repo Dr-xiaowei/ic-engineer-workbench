@@ -17,7 +17,7 @@
           "identifier": "main",
           "description": "主窗口仅使用 Tauri 核心与系统文件选择对话框；文件内容、数据库和网络由 Rust 类型化命令控制。",
           "windows": ["main"],
-          "permissions": ["core:default", "dialog:default"]
+          "permissions": ["core:default", "core:window:allow-destroy", "dialog:default"]
         }
       ]
     },

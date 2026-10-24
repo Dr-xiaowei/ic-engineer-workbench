@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { delimiter, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -20,7 +20,7 @@ const prefixes = [
   .filter(([source]) => typeof source === "string" && source.length > 1)
   .sort(([left], [right]) => right.length - left.length);
 
-const remapFlags = [...new Map(prefixes).entries()].map(
+const remapFlags = [...new Map(prefixes.flatMap(([source, replacement]) => [[source, replacement], [source.replaceAll("\\", "/"), replacement]])).entries()].map(
   ([source, replacement]) => `--remap-path-prefix=${source}=${replacement}`,
 );
 const inheritedFlags = (process.env.CARGO_ENCODED_RUSTFLAGS ?? "")
@@ -29,7 +29,7 @@ const inheritedFlags = (process.env.CARGO_ENCODED_RUSTFLAGS ?? "")
 const environment = {
   ...process.env,
   CARGO_ENCODED_RUSTFLAGS: [...inheritedFlags, ...remapFlags].join("\u001f"),
-  PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ""}`,
+  PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}`,
 };
 delete environment.RUSTFLAGS;
 

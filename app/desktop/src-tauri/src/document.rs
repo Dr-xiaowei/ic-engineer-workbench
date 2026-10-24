@@ -1,6 +1,6 @@
 use crate::is_demo_mode;
 use quick_xml::{events::Event, Reader, XmlVersion};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
@@ -13,7 +13,7 @@ const MAX_SOURCE_BYTES: u64 = 25 * 1024 * 1024;
 const MAX_EXTRACTED_BYTES: usize = 4 * 1024 * 1024;
 const MAX_DOCX_XML_BYTES: u64 = 8 * 1024 * 1024;
 
-#[derive(Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ConvertedDocument {
     pub(crate) id: String,
@@ -25,14 +25,15 @@ pub(crate) struct ConvertedDocument {
     pub(crate) warnings: Vec<String>,
 }
 
-fn source_file(path: &str) -> Result<(PathBuf, Vec<u8>), String> {
+pub(crate) fn source_file(path: &str) -> Result<(PathBuf, Vec<u8>), String> {
+    crate::file_safety::validate_path(path)?;
     if path.is_empty() || path.len() > 4096 {
         return Err("文件路径无效。".to_string());
     }
     let requested = Path::new(path);
     let link_metadata = fs::symlink_metadata(requested)
         .map_err(|_| "无法读取所选文件，请确认文件仍然存在。".to_string())?;
-    if link_metadata.file_type().is_symlink() || !link_metadata.is_file() {
+    if crate::file_safety::is_link(&link_metadata) || !link_metadata.is_file() {
         return Err("只允许读取用户明确选择的普通文件，不接受符号链接。".to_string());
     }
     if link_metadata.len() == 0 || link_metadata.len() > MAX_SOURCE_BYTES {
@@ -343,10 +344,35 @@ pub(crate) fn convert_document_bytes(
     }
     let extension = extension.to_ascii_lowercase();
     let (markdown, page_count, warnings) = match extension.as_str() {
-        "txt" | "md" => convert_txt(&bytes, &name)?,
+        "txt" => convert_txt(&bytes, &name)?,
+        "md" | "markdown" => {
+            if bytes.contains(&0) || bytes.len() > MAX_EXTRACTED_BYTES {
+                return Err("Markdown 包含空字节或超过 4 MiB。".into());
+            }
+            let text = std::str::from_utf8(bytes).map_err(|_| "Markdown 仅支持 UTF-8 编码。")?;
+            (
+                text.trim_start_matches('\u{feff}').to_string(),
+                None,
+                Vec::new(),
+            )
+        }
         "docx" => convert_docx(&bytes, &name)?,
         "pdf" => convert_pdf(&bytes, &name)?,
-        _ => return Err("仅支持 TXT、Markdown、DOCX 和 PDF 文件。".to_string()),
+        "pptx" => {
+            let (text, pages) = crate::presentation::extract(bytes)?;
+            (
+                format!("{}{}", markdown_header(name, "PPTX", bytes.len() as u64), text),
+                Some(pages),
+                vec!["PPTX 保留页序、正文、列表、基本表格与演讲者备注；图片、图表、动画、合并单元格及复杂版式不还原，公式和阅读顺序请复核。".into()],
+            )
+        }
+        "doc" | "ppt" => {
+            return Err(
+                "旧式 DOC/PPT 二进制格式尚不支持，请先在 Office 或 LibreOffice 另存为 DOCX/PPTX。"
+                    .into(),
+            )
+        }
+        _ => return Err("仅支持 TXT、Markdown、DOCX、PPTX 和含文本层的 PDF。".to_string()),
     };
     Ok(ConvertedDocument {
         id: document_id(&bytes),
@@ -359,8 +385,91 @@ pub(crate) fn convert_document_bytes(
     })
 }
 
+/// Uses the existing note exporters; conversion never writes into a selected input.
+#[tauri::command]
+pub fn export_converted_document(
+    path: String,
+    format: String,
+    title: String,
+    body: String,
+    formatted: Option<String>,
+    source_paths: Vec<String>,
+) -> Result<(), String> {
+    if !matches!(format.as_str(), "md" | "pdf" | "docx" | "pptx" | "txt") {
+        return Err("不支持的文档导出格式。".into());
+    }
+    if body.is_empty() || body.len() > MAX_EXTRACTED_BYTES || title.chars().count() > 180 {
+        return Err("导出正文不能为空且不超过 4 MiB，标题不超过 180 字。".into());
+    }
+    let destination = crate::notes::safe_destination(&path, &format)?;
+    protect_sources(&destination, &source_paths)?;
+    let bytes = match format.as_str() {
+        "md" => body.into_bytes(),
+        "pdf" => crate::pdf_export::build_pdf(&title, &format!("# {title}\n\n{body}"))?,
+        "docx" => crate::notes::formatted_docx_bytes(&formatted.ok_or("缺少 DOCX 排版数据。")?)?,
+        "pptx" => {
+            let data = formatted.ok_or("缺少 PPTX 排版数据。")?;
+            if data.len() > 16 * 1024 * 1024 {
+                return Err("PPTX 导出超过 16 MiB。".into());
+            }
+            let bytes = STANDARD.decode(data).map_err(|_| "PPTX 编码无效。")?;
+            crate::presentation::extract(&bytes)?;
+            bytes
+        }
+        _ => {
+            let text = formatted.ok_or("缺少纯文本内容。")?;
+            if text.len() > MAX_EXTRACTED_BYTES {
+                return Err("纯文本超过 4 MiB。".into());
+            }
+            text.into_bytes()
+        }
+    };
+    // create_new also protects against hard-link aliases and destination races on Windows.
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&destination)
+        .map_err(|_| "目标已存在或不可写，请另选新文件名；没有覆盖已有文件。")?;
+    if file
+        .write_all(&bytes)
+        .and_then(|_| file.sync_all())
+        .is_err()
+    {
+        drop(file);
+        let _ = fs::remove_file(&destination);
+        return Err("写入导出文件失败，请检查磁盘空间。".into());
+    }
+    Ok(())
+}
+
+fn protect_sources(destination: &Path, source_paths: &[String]) -> Result<(), String> {
+    if source_paths.is_empty() || source_paths.len() > 20 {
+        return Err("缺少有效的来源文件清单。".into());
+    }
+    for source in source_paths {
+        crate::file_safety::validate_path(source)?;
+        let source = Path::new(source);
+        // Fail closed if the source disappeared after conversion.
+        let canonical = source
+            .canonicalize()
+            .map_err(|_| "来源文件已移动，请重新选择后导出。")?;
+        if destination.canonicalize().is_ok_and(|p| p == canonical) {
+            return Err("请另存为新文件，不能覆盖本次选择的来源文件。".into());
+        }
+        #[cfg(unix)]
+        if let (Ok(a), Ok(b)) = (source.metadata(), destination.metadata()) {
+            use std::os::unix::fs::MetadataExt;
+            if a.dev() == b.dev() && a.ino() == b.ino() {
+                return Err("导出目标是来源文件的硬链接，请另存为新文件。".into());
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn export_markdown(path: String, content: String) -> Result<(), String> {
+    crate::file_safety::validate_path(&path)?;
     if content.is_empty() || content.len() > MAX_EXTRACTED_BYTES {
         return Err("导出内容不能为空且不能超过 4 MiB。".to_string());
     }
@@ -379,9 +488,9 @@ pub fn export_markdown(path: String, content: String) -> Result<(), String> {
         .file_name()
         .ok_or_else(|| "导出文件名无效。".to_string())?;
     let canonical_destination = canonical_parent.join(file_name);
-    if canonical_destination.exists()
+    if fs::symlink_metadata(&canonical_destination).is_ok()
         && fs::symlink_metadata(&canonical_destination)
-            .map(|metadata| metadata.file_type().is_symlink() || !metadata.is_file())
+            .map(|metadata| crate::file_safety::is_link(&metadata) || !metadata.is_file())
             .unwrap_or(true)
     {
         return Err("导出目标不是普通文件或指向符号链接。".to_string());
@@ -400,6 +509,123 @@ pub fn export_markdown(path: String, content: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct ConversionDir(PathBuf);
+    impl ConversionDir {
+        fn new() -> Self {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir()
+                .join(format!("icwb-conversion-{}-{stamp}", std::process::id()));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for ConversionDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn markdown_is_preserved_and_legacy_formats_are_explained() {
+        let original = "# 工程记录\n\n| 参数 | 数值 |\n|---|---|\n| 偏置 | 10 µA |\n";
+        for extension in ["md", "MD", "markdown"] {
+            assert_eq!(
+                convert_document_bytes("review.md", extension, original.as_bytes())
+                    .unwrap()
+                    .markdown,
+                original
+            );
+        }
+        for extension in ["doc", "ppt"] {
+            assert!(convert_document_bytes("legacy", extension, b"legacy bytes")
+                .unwrap_err()
+                .contains("另存"));
+        }
+        assert!(convert_document_bytes("bad.md", "md", b"text\0text").is_err());
+    }
+
+    #[test]
+    fn conversion_export_preserves_inputs_existing_outputs_and_rejects_bad_payloads() {
+        let dir = ConversionDir::new();
+        let source = dir.0.join("source.md");
+        fs::write(&source, "original 10 µA").unwrap();
+        let sources = vec![source.to_string_lossy().into_owned()];
+        let run = |path: &Path, format: &str, data: Option<String>| {
+            export_converted_document(
+                path.to_string_lossy().into_owned(),
+                format.into(),
+                "测试".into(),
+                "正文".into(),
+                data,
+                sources.clone(),
+            )
+        };
+        assert!(run(&source, "md", None).is_err());
+        let output = dir.0.join("review.md");
+        fs::write(&output, "existing output").unwrap();
+        assert!(run(&output, "md", None).is_err());
+        assert_eq!(fs::read_to_string(output).unwrap(), "existing output");
+        #[cfg(unix)]
+        {
+            let linked = dir.0.join("alias.md");
+            fs::hard_link(&source, &linked).unwrap();
+            assert!(run(&linked, "md", None).is_err());
+        }
+        assert!(run(&dir.0.join("wrong.txt"), "md", None).is_err());
+        assert!(run(
+            &dir.0.join("bad.pptx"),
+            "pptx",
+            Some(STANDARD.encode("not an archive"))
+        )
+        .is_err());
+        assert!(!dir.0.join("bad.pptx").exists());
+        assert_eq!(fs::read_to_string(&source).unwrap(), "original 10 µA");
+        assert!(run(&dir.0.join("new.md"), "md", None).is_ok());
+    }
+
+    #[test]
+    #[ignore = "requires frontend export fixtures; set ICWB_CONVERSION_FIXTURES"]
+    fn generated_frontend_formats_pass_backend_export_and_read_back() {
+        let root = PathBuf::from(
+            std::env::var("ICWB_CONVERSION_FIXTURES").expect("fixture directory required"),
+        );
+        let source = root.join("review.md");
+        let body = fs::read_to_string(&source).unwrap();
+        let before = fs::read(&source).unwrap();
+        let dir = ConversionDir::new();
+        for format in ["md", "txt", "docx", "pptx", "pdf"] {
+            let formatted = match format {
+                "docx" | "pptx" => {
+                    Some(STANDARD.encode(fs::read(root.join(format!("review.{format}"))).unwrap()))
+                }
+                "txt" => Some(fs::read_to_string(root.join("review.txt")).unwrap()),
+                _ => None,
+            };
+            let target = dir.0.join(format!("result.{format}"));
+            export_converted_document(
+                target.to_string_lossy().into_owned(),
+                format.into(),
+                "模拟 IC 评审".into(),
+                body.clone(),
+                formatted,
+                vec![source.to_string_lossy().into_owned()],
+            )
+            .unwrap();
+            let converted = convert_document_path(&target).unwrap();
+            assert!(
+                converted.markdown.contains("10 µA"),
+                "{format}: {}",
+                converted.markdown
+            );
+            assert!(converted.markdown.contains("10 MHz"), "{format}");
+            fs::copy(target, root.join(format!("backend-export.{format}"))).unwrap();
+        }
+        assert_eq!(before, fs::read(&source).unwrap());
+    }
 
     #[test]
     fn converts_utf8_text_without_exposing_the_source_path() {

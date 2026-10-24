@@ -89,13 +89,14 @@ fn validate_project_id(value: &str) -> Result<(), String> {
 }
 
 fn project_root(path: &str) -> Result<PathBuf, String> {
+    crate::file_safety::validate_path(path)?;
     if path.is_empty() || path.len() > 4096 {
         return Err("项目目录路径无效。".to_string());
     }
     let requested = Path::new(path);
     let metadata =
         fs::symlink_metadata(requested).map_err(|_| "无法读取所选项目目录。".to_string())?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+    if crate::file_safety::is_link(&metadata) || !metadata.is_dir() {
         return Err("只允许用户明确选择的普通目录，不接受符号链接。".to_string());
     }
     requested
@@ -120,7 +121,9 @@ fn allowed_entry(entry: &DirEntry) -> bool {
     if name.starts_with('.') || matches!(name.as_ref(), "node_modules" | "target" | "dist") {
         return false;
     }
-    !entry.file_type().is_symlink()
+    entry
+        .metadata()
+        .is_ok_and(|metadata| !crate::file_safety::is_link(&metadata))
 }
 
 fn supported_file(path: &Path) -> bool {
@@ -491,44 +494,47 @@ pub fn get_indexed_document(
         .map_err(|_| "该文件尚未成功建立本地索引。".to_string())
 }
 
-fn fts_query(query: &str) -> Result<String, String> {
+fn search_terms(query: &str) -> Result<Vec<String>, String> {
     if query.trim().is_empty() || query.len() > 500 {
-        return Err("搜索内容不能为空且不能超过 500 个字符。".to_string());
+        return Err("请输入不超过 500 字节的中文、型号或关键词。".into());
     }
-    let terms = query
+    Ok(query
         .split_whitespace()
-        .filter(|term| !term.is_empty())
-        .take(20)
-        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
-        .collect::<Vec<_>>();
-    if terms.is_empty() {
-        return Err("搜索内容没有有效关键词。".to_string());
-    }
-    Ok(terms.join(" OR "))
+        .take(12)
+        .map(str::to_lowercase)
+        .collect())
 }
 
-#[tauri::command]
-pub fn search_project(
-    app: tauri::AppHandle,
-    project_id: String,
-    query: String,
+// Literal substring matching complements unicode61: CJK short words and hyphenated
+// part numbers must work without rebuilding existing user indexes. SQL returns only
+// ranked excerpts; complete documents are never sent to a model during retrieval.
+fn search_index(
+    connection: &Connection,
+    project_id: &str,
+    query: &str,
 ) -> Result<Vec<SearchHit>, String> {
-    validate_project_id(&project_id)?;
-    let match_query = fts_query(&query)?;
-    let connection = open_database(&app)?;
+    let terms = serde_json::to_string(&search_terms(query)?).map_err(|_| "搜索词无效。")?;
     let mut statement = connection
         .prepare(
-            "SELECT f.document_id, s.relative_path, s.source_name,
-                    snippet(project_search, 3, '[', ']', '…', 24), bm25(project_search)
-             FROM project_search s
-             JOIN project_files f
-               ON f.project_id = s.project_id AND f.relative_path = s.relative_path
-             WHERE project_search MATCH ?1 AND s.project_id = ?2
-             ORDER BY bm25(project_search) LIMIT 20",
+            "WITH matches AS (
+           SELECT f.document_id,f.relative_path,f.source_name,f.markdown,
+             instr(lower(f.markdown),t.value) AS pos,
+             instr(lower(f.source_name),t.value)>0 AS title_match
+           FROM project_files f,json_each(?2) t
+           WHERE f.project_id=?1 AND f.document_id IS NOT NULL AND
+             (instr(lower(f.markdown),t.value)>0 OR instr(lower(f.source_name),t.value)>0)
+         ), ranked AS (
+           SELECT document_id,relative_path,source_name,markdown,
+             COALESCE(min(NULLIF(pos,0)),1) AS position,count(*)+sum(title_match)*3 AS relevance
+           FROM matches GROUP BY relative_path
+         )
+         SELECT document_id,relative_path,source_name,
+           substr(markdown,max(1,position-180),1100),relevance
+         FROM ranked ORDER BY relevance DESC,relative_path LIMIT 30",
         )
-        .map_err(|_| "无法准备项目搜索。".to_string())?;
-    let results = statement
-        .query_map(params![match_query, project_id], |row| {
+        .map_err(|_| "无法准备项目搜索。")?;
+    let rows = statement
+        .query_map(params![project_id, terms], |row| {
             Ok(SearchHit {
                 document_id: row.get(0)?,
                 relative_path: row.get(1)?,
@@ -537,41 +543,27 @@ pub fn search_project(
                 score: row.get(4)?,
             })
         })
-        .map_err(|_| "项目搜索失败。".to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| "项目搜索结果格式无效。".to_string())?;
-    Ok(results)
+        .map_err(|_| "项目搜索失败。")?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "项目搜索结果无效。".into())
 }
-
+#[tauri::command]
+pub fn search_project(
+    app: tauri::AppHandle,
+    project_id: String,
+    query: String,
+) -> Result<Vec<SearchHit>, String> {
+    validate_project_id(&project_id)?;
+    search_index(&open_database(&app)?, &project_id, &query)
+}
 #[tauri::command]
 pub fn project_semantic_candidates(
     app: tauri::AppHandle,
     project_id: String,
+    query: String,
 ) -> Result<Vec<SearchHit>, String> {
-    validate_project_id(&project_id)?;
-    let connection = open_database(&app)?;
-    let mut statement = connection
-        .prepare(
-            "SELECT document_id, relative_path, source_name, substr(markdown, 1, 1200)
-             FROM project_files
-             WHERE project_id = ?1 AND document_id IS NOT NULL AND markdown IS NOT NULL
-             ORDER BY modified_at DESC, relative_path ASC LIMIT 40",
-        )
-        .map_err(|_| "无法准备语义候选集。".to_string())?;
-    let results = statement
-        .query_map(params![project_id], |row| {
-            Ok(SearchHit {
-                document_id: row.get(0)?,
-                relative_path: row.get(1)?,
-                source_name: row.get(2)?,
-                snippet: row.get(3)?,
-                score: 0.0,
-            })
-        })
-        .map_err(|_| "无法读取语义候选集。".to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| "语义候选集格式无效。".to_string())?;
-    Ok(results)
+    // The caller supplies explicit keywords, not the 40 most recently modified files.
+    search_project(app, project_id, query)
 }
 
 #[cfg(test)]
@@ -582,7 +574,45 @@ mod tests {
     fn identifiers_and_fts_queries_are_bounded() {
         assert!(validate_project_id("project-0123abcdef").is_ok());
         assert!(validate_project_id("../outside").is_err());
-        assert_eq!(fts_query("偏置 电流").unwrap(), "\"偏置\" OR \"电流\"");
-        assert!(fts_query("").is_err());
+        assert_eq!(search_terms("偏置 电流").unwrap(), vec!["偏置", "电流"]);
+        assert!(search_terms("").is_err());
+    }
+}
+
+#[cfg(test)]
+mod retrieval_tests {
+    use super::*;
+    #[test]
+    fn chinese_models_and_old_document_tail_are_retrieved_without_fts_token_boundaries() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE project_files(project_id TEXT,document_id TEXT,relative_path TEXT,source_name TEXT,markdown TEXT);").unwrap();
+        for i in 0..60 {
+            let body = format!(
+                "{}\n第 {} 项：带隙基准启动电路 ZXW-{:03} PSRR 60 dB 25 °C",
+                "背景资料。".repeat(3000),
+                i,
+                i
+            );
+            db.execute(
+                "INSERT INTO project_files VALUES('p',?1,?2,?2,?3)",
+                params![format!("id{i}"), format!("part-{i}.md"), body],
+            )
+            .unwrap();
+        }
+        db.execute("INSERT INTO project_files VALUES('other','foreign','private.md','private.md','私有独占')",[]).unwrap();
+        let started = std::time::Instant::now();
+        for i in 0..30 {
+            let results = search_index(&db, "p", &format!("ZXW-{i:03}")).unwrap();
+            assert_eq!(results.len(), 1);
+            assert!(results[0].snippet.contains("启动电路"));
+        }
+        assert_eq!(search_index(&db, "p", "启动").unwrap().len(), 30);
+        assert_eq!(
+            search_index(&db, "p", "zxw-000").unwrap()[0].document_id,
+            "id0"
+        );
+        assert!(search_index(&db, "p", "私有独占").unwrap().is_empty());
+        assert!(search_index(&db, "p", "%_'").unwrap().is_empty());
+        eprintln!("60 个合成文档、30 次型号定位耗时 {:?}", started.elapsed());
     }
 }

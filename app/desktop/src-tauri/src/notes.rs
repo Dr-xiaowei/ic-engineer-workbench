@@ -1,5 +1,6 @@
 use crate::{
     pdf_export,
+    productivity::{validate_citations, Citation},
     storage::{open_database, record_audit},
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -24,6 +25,10 @@ pub struct NoteInput {
     id: Option<String>,
     title: String,
     body: String,
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
+    citations: Vec<Citation>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -34,6 +39,8 @@ pub struct Note {
     body: String,
     created_at: i64,
     updated_at: i64,
+    project_id: Option<String>,
+    citations: Vec<Citation>,
 }
 
 fn valid_id(value: &str) -> bool {
@@ -87,7 +94,7 @@ fn verified_notes_root(app: &tauri::AppHandle) -> Result<Option<PathBuf>, String
     };
     let metadata = fs::symlink_metadata(&root)
         .map_err(|_| "已映射的笔记目录不可用，请重新选择。".to_string())?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+    if !metadata.is_dir() || crate::file_safety::is_link(&metadata) {
         return Err("已映射的笔记目录不再是安全目录，请重新选择。".to_string());
     }
     let canonical = root
@@ -106,19 +113,20 @@ pub fn get_notes_root(app: tauri::AppHandle) -> Result<Option<String>, String> {
 
 #[tauri::command]
 pub fn set_notes_root(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    crate::file_safety::validate_path(&path)?;
     let requested = Path::new(&path);
     let metadata =
         fs::symlink_metadata(requested).map_err(|_| "无法读取所选笔记目录。".to_string())?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+    if !metadata.is_dir() || crate::file_safety::is_link(&metadata) {
         return Err("笔记存储位置必须是非符号链接目录。".to_string());
     }
     let mapped = requested
         .canonicalize()
         .map_err(|_| "无法验证笔记目录。".to_string())?
         .join("芯智笔记");
-    if mapped.exists()
+    if fs::symlink_metadata(&mapped).is_ok()
         && fs::symlink_metadata(&mapped)
-            .map(|m| m.file_type().is_symlink() || !m.is_dir())
+            .map(|m| crate::file_safety::is_link(&m) || !m.is_dir())
             .unwrap_or(true)
     {
         return Err("映射目标不是安全目录。".to_string());
@@ -138,7 +146,7 @@ pub fn set_notes_root(app: tauri::AppHandle, path: String) -> Result<String, Str
 
 fn load(app: &tauri::AppHandle) -> Result<Vec<Note>, String> {
     let connection = open_database(app)?;
-    let mut statement = connection.prepare("SELECT id,title,body,created_at,updated_at FROM notes ORDER BY updated_at DESC,id DESC").map_err(|_| "无法读取笔记。".to_string())?;
+    let mut statement = connection.prepare("SELECT n.id,n.title,n.body,n.created_at,n.updated_at,r.project_id,COALESCE(r.citations_json,'[]') FROM notes n LEFT JOIN note_reviews r ON r.note_id=n.id ORDER BY n.updated_at DESC,n.id DESC").map_err(|_| "无法读取笔记。".to_string())?;
     let notes = statement
         .query_map([], |row| {
             Ok(Note {
@@ -147,6 +155,14 @@ fn load(app: &tauri::AppHandle) -> Result<Vec<Note>, String> {
                 body: row.get(2)?,
                 created_at: row.get(3)?,
                 updated_at: row.get(4)?,
+                project_id: row.get(5)?,
+                citations: serde_json::from_str(&row.get::<_, String>(6)?).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        6,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?,
             })
         })
         .map_err(|_| "无法读取笔记。".to_string())?
@@ -171,7 +187,7 @@ fn sync_markdown_to(root: &Path, id: &str, title: &str, body: &str) -> Result<()
     let target = root.join(format!("{id}.md"));
     if fs::symlink_metadata(&target).is_ok()
         && fs::symlink_metadata(&target)
-            .map(|m| m.file_type().is_symlink() || !m.is_file())
+            .map(|m| crate::file_safety::is_link(&m) || !m.is_file())
             .unwrap_or(true)
     {
         return Err("笔记映射文件不是普通文件。".to_string());
@@ -194,8 +210,20 @@ pub fn save_note(app: tauri::AppHandle, input: NoteInput) -> Result<Note, String
     if !valid_id(&id) {
         return Err("笔记标识无效。".to_string());
     }
+    let mut connection = open_database(&app)?;
+    validate_citations(&connection, &input.citations)?;
+    if let Some(project_id) = &input.project_id {
+        connection
+            .query_row("SELECT id FROM projects WHERE id=?1", [project_id], |r| {
+                r.get::<_, String>(0)
+            })
+            .map_err(|_| "关联项目已不存在，请重新选择。")?;
+    }
     sync_markdown(&app, &id, &input.title, &input.body)?;
-    open_database(&app)?.execute("INSERT INTO notes(id,title,body) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET title=excluded.title,body=excluded.body,updated_at=unixepoch()", params![id,input.title.trim(),input.body]).map_err(|_| "无法保存笔记。".to_string())?;
+    let transaction = connection.transaction().map_err(|_| "无法开始笔记保存。")?;
+    transaction.execute("INSERT INTO notes(id,title,body) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET title=excluded.title,body=excluded.body,updated_at=unixepoch()", params![id,input.title.trim(),input.body]).map_err(|_| "无法保存笔记。".to_string())?;
+    transaction.execute("INSERT INTO note_reviews(note_id,project_id,citations_json) VALUES(?1,?2,?3) ON CONFLICT(note_id) DO UPDATE SET project_id=excluded.project_id,citations_json=excluded.citations_json",params![id,input.project_id,serde_json::to_string(&input.citations).map_err(|_|"引用格式无效。")?]).map_err(|_|"无法保存笔记引用。")?;
+    transaction.commit().map_err(|_| "无法提交笔记保存。")?;
     record_audit(&app, "notes.save", "success");
     load(&app)?
         .into_iter()
@@ -208,24 +236,39 @@ pub fn delete_note(app: tauri::AppHandle, note_id: String) -> Result<(), String>
     if !valid_id(&note_id) {
         return Err("笔记标识无效。".to_string());
     }
-    if let Some(root) = verified_notes_root(&app)? {
-        let target = root.join(format!("{note_id}.md"));
-        if target.exists() {
-            let metadata =
-                fs::symlink_metadata(&target).map_err(|_| "无法检查笔记映射文件。".to_string())?;
-            if metadata.is_file() && !metadata.file_type().is_symlink() {
-                fs::remove_file(target).map_err(|_| "无法移除笔记映射文件。".to_string())?;
-            }
-        }
-    }
-    open_database(&app)?
-        .execute("DELETE FROM notes WHERE id=?1", params![note_id])
-        .map_err(|_| "无法删除笔记。".to_string())?;
+    let root = verified_notes_root(&app)?;
+    let connection = open_database(&app)?;
+    delete_note_from_store(&connection, root.as_deref(), &note_id)?;
     record_audit(&app, "notes.delete", "success");
     Ok(())
 }
 
-fn safe_destination(path: &str, extension: &str) -> Result<PathBuf, String> {
+fn delete_note_from_store(
+    connection: &rusqlite::Connection,
+    root: Option<&Path>,
+    note_id: &str,
+) -> Result<(), String> {
+    if !valid_id(note_id) {
+        return Err("笔记标识无效。".to_string());
+    }
+    if let Some(root) = root {
+        let target = root.join(format!("{note_id}.md"));
+        if target.exists() {
+            let metadata =
+                fs::symlink_metadata(&target).map_err(|_| "无法检查笔记映射文件。".to_string())?;
+            if metadata.is_file() && !crate::file_safety::is_link(&metadata) {
+                fs::remove_file(target).map_err(|_| "无法移除笔记映射文件。".to_string())?;
+            }
+        }
+    }
+    connection
+        .execute("DELETE FROM notes WHERE id=?1", params![note_id])
+        .map_err(|_| "无法删除笔记。".to_string())?;
+    Ok(())
+}
+
+pub(crate) fn safe_destination(path: &str, extension: &str) -> Result<PathBuf, String> {
+    crate::file_safety::validate_path(path)?;
     let target = Path::new(path);
     if target
         .extension()
@@ -249,7 +292,7 @@ fn safe_destination(path: &str, extension: &str) -> Result<PathBuf, String> {
     );
     if fs::symlink_metadata(&result).is_ok()
         && fs::symlink_metadata(&result)
-            .map(|m| m.file_type().is_symlink() || !m.is_file())
+            .map(|m| crate::file_safety::is_link(&m) || !m.is_file())
             .unwrap_or(true)
     {
         return Err("导出目标不是普通文件。".to_string());
@@ -321,16 +364,7 @@ pub fn export_note(
             return Err("排版导出超过 16 MiB 上限。".to_string());
         }
         if format == "docx" {
-            let decoded = STANDARD
-                .decode(&content)
-                .map_err(|_| "DOCX 数据编码无效。".to_string())?;
-            let mut archive = zip::ZipArchive::new(Cursor::new(&decoded))
-                .map_err(|_| "DOCX 数据结构无效。".to_string())?;
-            archive
-                .by_name("word/document.xml")
-                .map_err(|_| "DOCX 缺少正文。".to_string())?;
-            drop(archive);
-            decoded
+            formatted_docx_bytes(&content)?
         } else {
             content.into_bytes()
         }
@@ -350,9 +384,85 @@ pub fn export_note(
         .map_err(|_| "无法写入笔记导出文件。".to_string())
 }
 
+pub(crate) fn formatted_docx_bytes(content: &str) -> Result<Vec<u8>, String> {
+    if content.len() > 16 * 1024 * 1024 {
+        return Err("排版导出超过 16 MiB 上限。".into());
+    }
+    let decoded = STANDARD
+        .decode(content)
+        .map_err(|_| "DOCX 数据编码无效。")?;
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(&decoded)).map_err(|_| "DOCX 数据结构无效。")?;
+    archive
+        .by_name("word/document.xml")
+        .map_err(|_| "DOCX 缺少正文。")?;
+    drop(archive);
+    Ok(decoded)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct NoteFixture(PathBuf);
+    impl NoteFixture {
+        fn new() -> Self {
+            let stamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir()
+                .join(format!("icwb-note-delete-{}-{stamp}", std::process::id()));
+            fs::create_dir_all(&root).unwrap();
+            Self(root)
+        }
+    }
+    impl Drop for NoteFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn deleting_note_removes_only_its_mapping_and_review() {
+        let fixture = NoteFixture::new();
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        crate::storage::initialize(&db).unwrap();
+        db.execute_batch("PRAGMA foreign_keys=ON;
+            INSERT INTO notes(id,title,body) VALUES('note-delete','合成待删除','10 µA'),('note-keep','合成保留','1.8 V');
+            INSERT INTO note_reviews(note_id,citations_json) VALUES('note-delete','[]');").unwrap();
+        fs::write(fixture.0.join("note-delete.md"), "10 µA").unwrap();
+        fs::write(fixture.0.join("note-keep.md"), "1.8 V").unwrap();
+        fs::write(fixture.0.join("source.md"), "合成导入原件").unwrap();
+        assert!(delete_note_from_store(&db, Some(&fixture.0), "../source").is_err());
+        delete_note_from_store(&db, Some(&fixture.0), "note-delete").unwrap();
+        assert!(!fixture.0.join("note-delete.md").exists());
+        assert_eq!(
+            fs::read_to_string(fixture.0.join("note-keep.md")).unwrap(),
+            "1.8 V"
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.0.join("source.md")).unwrap(),
+            "合成导入原件"
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM note_reviews", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row("SELECT body FROM notes", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "1.8 V"
+        );
+        // Database-only notes use the same path without requiring a mapped folder.
+        delete_note_from_store(&db, None, "note-keep").unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM notes", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
     #[test]
     fn docx_is_valid_and_note_ids_are_bounded() {
         let bytes = docx_bytes("测试笔记", "## 参数\n偏置电流 10 uA").unwrap();

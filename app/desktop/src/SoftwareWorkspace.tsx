@@ -9,7 +9,7 @@ export default function SoftwareWorkspace() {
   const [items, setItems] = useState<Launcher[]>([]); const [path, setPath] = useState(""); const [name, setName] = useState(""); const [notice, setNotice] = useState(""); const [query, setQuery] = useState(""); const [removeId, setRemoveId] = useState("");
   const refresh = () => invoke<Launcher[]>("list_software_launchers").then(setItems).catch(() => setNotice("软件快捷入口仅在桌面应用中可用。"));
   useEffect(() => { void refresh(); }, []);
-  async function choose() { const selected = await open({ directory: false, multiple: false }); if (typeof selected !== "string") return; setPath(selected); setName(selected.split(/[\\/]/).pop()?.replace(/\.app$/i, "") ?? "常用软件"); }
+  async function choose() { const selected = await open({ directory: false, multiple: false }); if (typeof selected !== "string") return; setPath(selected); setName(selected.split(/[\\/]/).pop()?.replace(/\.(app|exe)$/i, "") ?? "常用软件"); }
   async function add() { if (!path || !name.trim()) return; try { await invoke("add_software_launcher", { path, name: name.trim() }); setPath(""); setName(""); setNotice("快捷入口已保存；启动时仍会由后端重新校验软件路径和类型。"); await refresh(); } catch (error) { setNotice(safeError(error)); } }
   async function launch(id: string) { try { await invoke("launch_software", { launcherId: id }); setNotice("已请求系统启动所选软件。"); } catch (error) { setNotice(safeError(error)); } }
   async function remove(id: string) { if (removeId !== id) { setRemoveId(id); setNotice("再次点击移除；只删除快捷入口，不会卸载软件。"); return; } try { await invoke("remove_software_launcher", { launcherId: id }); setRemoveId(""); setNotice("快捷入口已移除，软件本身未被修改。"); await refresh(); } catch (error) { setNotice(safeError(error)); } }

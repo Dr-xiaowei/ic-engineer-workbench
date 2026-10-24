@@ -13,6 +13,7 @@
 | rehype-sanitize | 不可信 Markdown 清洗 | MIT |
 | pdfjs-dist 6.3.289 | 离线 PDF 分页渲染与字体资源 | Apache-2.0；字体/CMap 含各自许可文件，原文随资源打包 |
 | docx 9.7.1 | 笔记标题、表格、图片的 OOXML 导出 | MIT |
+| PptxGenJS 4.0.1 | 按需加载的本地 PPTX 正文与表格导出 | MIT；随包包含版权及传递依赖许可 |
 | Vite / TypeScript / Vitest / Testing Library | 构建、类型检查和测试，仅开发使用 | MIT（各包以锁文件元数据为准） |
 
 ## Rust 直接依赖

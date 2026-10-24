@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::Duration,
+    sync::Mutex,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::Manager;
 
@@ -14,7 +15,7 @@ const MAX_CONVERSATIONS: usize = 200;
 const MAX_STORED_MESSAGES: usize = 1_000;
 const MAX_TITLE_LENGTH: usize = 160;
 const MAX_STORED_MESSAGE_LENGTH: usize = 32_000;
-pub(crate) const SCHEMA_VERSION: i64 = 9;
+pub(crate) const SCHEMA_VERSION: i64 = 10;
 const MAX_DOCUMENT_ATTACHMENTS_PER_MESSAGE: usize = 3;
 const MAX_DOCUMENT_ATTACHMENT_LENGTH: usize = 16 * 1024;
 const MAX_CONVERSATION_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
@@ -114,7 +115,7 @@ fn validate_conversation(conversation: &StoredConversation) -> Result<(), String
     Ok(())
 }
 
-fn initialize(connection: &Connection) -> Result<(), String> {
+pub(crate) fn initialize(connection: &Connection) -> Result<(), String> {
     let version = connection
         .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
         .map_err(|_| "无法读取本地会话数据库版本。".to_string())?;
@@ -122,9 +123,27 @@ fn initialize(connection: &Connection) -> Result<(), String> {
         return Err("本地会话数据库来自更新版本，当前应用无法安全打开。".to_string());
     }
     connection
+        .pragma_update(None, "foreign_keys", true)
+        .map_err(|_| "无法启用本地数据关联保护。".to_string())?;
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|_| "无法开始数据库升级事务。".to_string())?;
+    let locked_version: i64 = transaction
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|_| "无法在事务中复核数据库版本。".to_string())?;
+    if locked_version > SCHEMA_VERSION {
+        return Err("数据库已经被新版升级，当前应用不会修改它。".to_string());
+    }
+    initialize_schema(&transaction, locked_version)?;
+    transaction
+        .commit()
+        .map_err(|_| "数据库升级未能提交，原有数据已回滚。".to_string())
+}
+
+fn initialize_schema(connection: &Connection, version: i64) -> Result<(), String> {
+    connection
         .execute_batch(
-            "PRAGMA foreign_keys = ON;
-             CREATE TABLE IF NOT EXISTS conversations (
+            "CREATE TABLE IF NOT EXISTS conversations (
                id TEXT PRIMARY KEY,
                title TEXT NOT NULL,
                created_at INTEGER NOT NULL DEFAULT (unixepoch()),
@@ -319,12 +338,23 @@ fn initialize(connection: &Connection) -> Result<(), String> {
              );
              CREATE INDEX IF NOT EXISTS project_progress_history_project
                ON project_progress_history(project_id,created_at DESC);
+             CREATE TABLE IF NOT EXISTS workspace_state (
+               key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE TABLE IF NOT EXISTS review_sources (
+               id TEXT PRIMARY KEY, path TEXT, document_json TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
              CREATE TABLE IF NOT EXISTS notes (
                id TEXT PRIMARY KEY,
                title TEXT NOT NULL,
                body TEXT NOT NULL,
                created_at INTEGER NOT NULL DEFAULT (unixepoch()),
                updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE TABLE IF NOT EXISTS note_reviews (
+               note_id TEXT PRIMARY KEY REFERENCES notes(id) ON DELETE CASCADE,
+               project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+               citations_json TEXT NOT NULL DEFAULT '[]'
              );",
         )
         .map_err(|_| "无法初始化本地会话数据库。".to_string())?;
@@ -423,6 +453,7 @@ pub fn set_network_access(app: tauri::AppHandle, enabled: bool) -> Result<bool, 
 }
 
 fn validate_backup_path(path: &str, existing: bool) -> Result<PathBuf, String> {
+    crate::file_safety::validate_path(path)?;
     let requested = Path::new(path);
     if requested.extension().and_then(|value| value.to_str()) != Some("icwb") {
         return Err("工作台备份必须使用 .icwb 扩展名。".to_string());
@@ -430,7 +461,7 @@ fn validate_backup_path(path: &str, existing: bool) -> Result<PathBuf, String> {
     if existing {
         let metadata =
             fs::symlink_metadata(requested).map_err(|_| "无法读取所选备份文件。".to_string())?;
-        if metadata.file_type().is_symlink()
+        if crate::file_safety::is_link(&metadata)
             || !metadata.is_file()
             || metadata.len() > 1024 * 1024 * 1024
         {
@@ -450,9 +481,9 @@ fn validate_backup_path(path: &str, existing: bool) -> Result<PathBuf, String> {
         .file_name()
         .ok_or_else(|| "备份文件名无效。".to_string())?;
     let destination = parent.join(name);
-    if destination.exists()
+    if fs::symlink_metadata(&destination).is_ok()
         && fs::symlink_metadata(&destination)
-            .map(|metadata| metadata.file_type().is_symlink() || !metadata.is_file())
+            .map(|metadata| crate::file_safety::is_link(&metadata) || !metadata.is_file())
             .unwrap_or(true)
     {
         return Err("备份目标不是普通文件或指向符号链接。".to_string());
@@ -649,10 +680,113 @@ fn database_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 pub(crate) fn open_database(app: &tauri::AppHandle) -> Result<Connection, String> {
-    let connection = Connection::open(database_path(app)?)
-        .map_err(|_| "无法打开本地会话数据库。".to_string())?;
+    open_database_path(&database_path(app)?)
+}
+
+// Serialize first-open migrations across concurrent IPC commands. SQLite itself
+// keeps each schema change atomic, including failures partway through old migrations.
+static DATABASE_OPEN_LOCK: Mutex<()> = Mutex::new(());
+
+fn open_database_path(path: &Path) -> Result<Connection, String> {
+    let _guard = DATABASE_OPEN_LOCK
+        .lock()
+        .map_err(|_| "数据库升级状态异常，请关闭并重新启动工作台。".to_string())?;
+    if fs::symlink_metadata(path).is_ok_and(|m| crate::file_safety::is_link(&m) || !m.is_file()) {
+        return Err("本地数据库必须是普通文件，不能指向链接。".to_string());
+    }
+    let connection = Connection::open(path).map_err(|_| "无法打开本地会话数据库。".to_string())?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(|_| "无法配置数据库写入等待。".to_string())?;
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|_| "无法读取本地数据库版本。".to_string())?;
+    if version > SCHEMA_VERSION {
+        return Err(
+            "本地数据库来自更新版本。请使用对应新版，或在独立目录恢复升级前备份；旧版不会修改它。"
+                .to_string(),
+        );
+    }
+    if version == SCHEMA_VERSION {
+        connection
+            .pragma_update(None, "foreign_keys", true)
+            .map_err(|_| "无法启用本地数据关联保护。".to_string())?;
+        return Ok(connection);
+    }
+    if version > 0 {
+        create_migration_backup(&connection, path, version)?;
+    } else {
+        let has_tables: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%')", [], |row| row.get(0)
+        ).map_err(|_| "无法检查本地数据库结构。".to_string())?;
+        if has_tables {
+            return Err("数据库含有未标记版本的内容，已停止初始化以保护原有数据。".to_string());
+        }
+    }
     initialize(&connection)?;
     Ok(connection)
+}
+
+fn create_migration_backup(
+    source: &Connection,
+    path: &Path,
+    version: i64,
+) -> Result<PathBuf, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "无法定位升级备份目录。".to_string())?;
+    let directory = parent.join("migration-backups");
+    if fs::symlink_metadata(&directory)
+        .is_ok_and(|m| crate::file_safety::is_link(&m) || !m.is_dir())
+    {
+        return Err("升级备份目录不安全，已保留原数据并停止升级。".to_string());
+    }
+    fs::create_dir_all(&directory).map_err(|_| "无法创建升级备份目录，已停止升级。".to_string())?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "系统时间无效，无法创建升级备份。".to_string())?
+        .as_nanos();
+    let destination = directory.join(format!(
+        "before-schema-{version}-to-{SCHEMA_VERSION}-{stamp}-{}.icwb",
+        std::process::id()
+    ));
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&destination)
+        .map_err(|_| "无法建立升级前备份，原数据未改动。".to_string())?;
+    drop(file);
+    let result = (|| {
+        let mut backup_connection =
+            Connection::open(&destination).map_err(|_| "无法打开升级前备份。".to_string())?;
+        {
+            let backup = rusqlite::backup::Backup::new(source, &mut backup_connection)
+                .map_err(|_| "无法开始升级前备份。".to_string())?;
+            backup
+                .run_to_completion(64, Duration::from_millis(20), None)
+                .map_err(|_| "升级前备份失败，原数据未改动。".to_string())?;
+        }
+        let backup_version: i64 = backup_connection
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .map_err(|_| "无法验证升级备份版本。".to_string())?;
+        let integrity: String = backup_connection
+            .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+            .map_err(|_| "无法检查升级备份完整性。".to_string())?;
+        if backup_version != version || integrity != "ok" {
+            return Err("升级备份未通过验证，已停止升级。".to_string());
+        }
+        drop(backup_connection);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&destination)
+            .and_then(|file| file.sync_all())
+            .map_err(|_| "升级备份未能安全写入磁盘，已停止升级。".to_string())?;
+        Ok(destination.clone())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&destination);
+    }
+    result
 }
 
 fn save_with_connection(
@@ -859,6 +993,10 @@ pub(crate) fn save_conversation(
 }
 
 #[cfg(test)]
+#[path = "storage_upgrade_tests.rs"]
+mod upgrade_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1061,8 +1199,28 @@ mod tests {
             "calendar_tasks",
             "project_progress_history",
             "software_launchers",
+            "workspace_state",
+            "review_sources",
+            "note_reviews",
         ] {
             let sql = format!("SELECT COUNT(*) FROM {table}");
+            if source
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap()
+                == 0
+            {
+                assert_eq!(
+                    destination
+                        .query_row(&sql, [], |r| r.get::<_, i64>(0))
+                        .unwrap(),
+                    0
+                );
+                continue;
+            }
             let count =
                 |db: &Connection| db.query_row(&sql, [], |row| row.get::<_, i64>(0)).unwrap();
             assert_eq!(count(&source), count(&destination), "{table}");

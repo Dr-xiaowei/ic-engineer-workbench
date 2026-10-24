@@ -141,13 +141,14 @@ fn has_executable_content(directory: &Path) -> bool {
 }
 
 fn selected_skill(path: &str) -> Result<(String, String, String, bool), String> {
+    crate::file_safety::validate_path(path)?;
     if path.is_empty() || path.len() > 4096 {
         return Err("Skill 路径无效。".to_string());
     }
     let selected = Path::new(path);
     let metadata =
         fs::symlink_metadata(selected).map_err(|_| "无法读取所选 Skill。".to_string())?;
-    if metadata.file_type().is_symlink() {
+    if crate::file_safety::is_link(&metadata) {
         return Err("Skill 导入不接受符号链接。".to_string());
     }
     let (skill_file, source_type, has_scripts) = if metadata.is_dir() {
@@ -165,7 +166,7 @@ fn selected_skill(path: &str) -> Result<(String, String, String, bool), String> 
     };
     let skill_metadata =
         fs::symlink_metadata(&skill_file).map_err(|_| "所选目录缺少 SKILL.md。".to_string())?;
-    if skill_metadata.file_type().is_symlink()
+    if crate::file_safety::is_link(&skill_metadata)
         || !skill_metadata.is_file()
         || skill_metadata.len() == 0
         || skill_metadata.len() > MAX_SKILL_BYTES

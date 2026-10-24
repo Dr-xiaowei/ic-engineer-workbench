@@ -19,7 +19,7 @@ beforeEach(() => { invoke.mockReset(); open.mockReset(); });
 
 describe("calendar data coverage", () => {
   it("shows and edits every event even when a day contains more than four", async () => {
-    invoke.mockImplementation(async (command: string) => command === "list_projects" ? [] : Array.from({ length: 7 }, (_, i) => task(i)));
+    invoke.mockImplementation(async (command: string) => command === "load_workspace_state" ? null : command === "list_projects" ? [] : Array.from({ length: 7 }, (_, i) => task(i)));
     render(<CalendarWorkspace />);
     const last = (await screen.findAllByRole("button", { name: /合成待办6/ })).find(button => button.classList.contains("calendar-event"))!;
     expect(document.querySelectorAll(".calendar-event")).toHaveLength(7);
@@ -29,8 +29,9 @@ describe("calendar data coverage", () => {
   });
 
   it("saves project association, priority, status and reminder through the existing command", async () => {
-    invoke.mockImplementation(async (command: string) => command === "list_projects" ? [{ id: "project-demo", name: "合成项目" }] : []);
+    invoke.mockImplementation(async (command: string) => command === "load_workspace_state" ? null : command === "list_projects" ? [{ id: "project-demo", name: "合成项目" }] : []);
     render(<CalendarWorkspace />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "新建待办" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "新建待办" }));
     await screen.findByRole("option", { name: "合成项目" });
     fireEvent.change(screen.getByLabelText("任务名称"), { target: { value: "评审" } });
@@ -49,6 +50,7 @@ describe("calendar data coverage", () => {
     let deleted = false;
     let fail = true;
     invoke.mockImplementation(async (command: string) => {
+      if (command === "load_workspace_state") return null;
       if (command === "list_calendar_tasks") return deleted ? [] : [task(1, "done")];
       if (command === "delete_calendar_task") { if (fail) throw new Error("test failure"); deleted = true; }
       return [];
@@ -57,7 +59,7 @@ describe("calendar data coverage", () => {
     fireEvent.click(await screen.findByRole("button", { name: /合成待办1/ }));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "删除" }));
-    await waitFor(() => expect(within(screen.getByRole("dialog")).getByRole("status")).toHaveTextContent("无法删除待办"));
+    await waitFor(() => expect(within(screen.getByRole("dialog")).getAllByRole("status").some(el => el.textContent?.includes("无法删除待办"))).toBe(true));
     fail = false;
     fireEvent.click(screen.getByRole("button", { name: "删除" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
@@ -68,10 +70,11 @@ describe("calendar data coverage", () => {
     invoke.mockRejectedValue("合成失败");
     render(<CalendarWorkspace />);
     await screen.findByText("日历待办仅在桌面应用中可用。");
+    await waitFor(() => expect(screen.getByRole("button", { name: "新建待办" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "新建待办" }));
     fireEvent.change(screen.getByLabelText("任务名称"), { target: { value: "保留草稿" } });
     fireEvent.click(screen.getByRole("button", { name: "保存待办" }));
-    await waitFor(() => expect(within(screen.getByRole("dialog")).getByRole("status")).toHaveTextContent("合成失败"));
+    await waitFor(() => expect(within(screen.getByRole("dialog")).getAllByRole("status").some(el => el.textContent?.includes("合成失败"))).toBe(true));
     expect(screen.getByLabelText("任务名称")).toHaveValue("保留草稿");
   });
 });

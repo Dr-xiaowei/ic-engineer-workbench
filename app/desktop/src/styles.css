@@ -419,7 +419,7 @@ h3 { margin-bottom: 6px; font-size: 14px; }
   box-shadow: -24px 0 60px var(--shadow);
 }
 .endpoint-heading, .endpoint-card-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.endpoint-heading { margin-bottom: 17px; }
+.endpoint-heading { position: sticky; top: -20px; z-index: 1; margin: -20px -20px 17px; background: var(--surface-strong); padding: 20px; }
 .endpoint-heading > span { color: var(--muted); font-size: 11px; }
 .endpoint-list { display: grid; gap: 10px; }
 .endpoint-card { border: 1px solid var(--line); border-radius: 13px; background: var(--surface); padding: 14px; }
@@ -929,3 +929,7 @@ h3 { margin-bottom: 6px; font-size: 14px; }
 .pdf-toolbar button { padding:6px 10px; }
 .pdf-canvas-scroll { overflow:auto; background:#454b54; padding:14px; flex:1; }
 .pdf-canvas-scroll canvas { display:block; width:100%; height:auto; background:white; margin:auto; }
+
+.conversion-export-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.conversion-export-controls select { font: inherit; padding: 6px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; }
+.conversion-format-help { margin: 12px 0; color: var(--muted); font-size: 13px; line-height: 1.6; }

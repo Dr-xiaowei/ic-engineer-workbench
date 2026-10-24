@@ -28,6 +28,14 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   save: dialogSaveMock,
 }));
 
+
+function navigate(name: string) {
+  const group = ({"工作台":"今日","日历与待办":"今日","邮件助手":"今日","项目管理":"项目","Datasheet":"资料","知识笔记":"资料","智能对话":"助手","工作模板":"助手","Skills":"助手","格式转换":"工具","科学计算器":"工具","常用软件":"工具"} as Record<string,string>)[name];
+  fireEvent.click(within(screen.getByRole("navigation",{name:"主导航"})).getByRole("button",{name:group}));
+  fireEvent.click(within(screen.getByRole("navigation",{name:"当前模块功能"})).getByRole("button",{name:name==="Skills"?"工作模板":name}));
+  if (name === "Skills") fireEvent.click(screen.getByText("进阶：导入与管理 Skills"));
+}
+
 describe("App", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -39,6 +47,8 @@ describe("App", () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === "has_model_secret") return Promise.resolve(false);
       if (command === "validate_model_endpoint") return Promise.reject(new Error("browser preview"));
+      if (command === "load_workspace_state") return Promise.resolve(null);
+      if (command === "save_workspace_state") return Promise.resolve();
       return new Promise(() => undefined);
     });
   });
@@ -54,13 +64,13 @@ describe("App", () => {
   it("keeps all eleven destinations reachable in grouped navigation", () => {
     render(<App />);
     const navigation = screen.getByRole("navigation", { name: "主导航" });
-    expect(within(navigation).getAllByRole("button")).toHaveLength(11);
-    for (const group of ["工作空间", "资料与知识", "常用工具"]) {
-      expect(within(navigation).getByRole("region", { name: group })).toBeInTheDocument();
+    expect(within(navigation).getAllByRole("button")).toHaveLength(5);
+    for (const group of ["今日", "项目", "资料", "助手", "工具"]) {
+      expect(within(navigation).getByRole("button", { name: group })).toBeInTheDocument();
     }
-    for (const name of ["工作台", "智能对话", "项目管理", "Datasheet", "知识笔记", "Skills", "格式转换", "邮件助手", "日历与待办", "科学计算器", "常用软件"]) {
-      const button = within(navigation).getByRole("button", { name });
-      fireEvent.click(button);
+    for (const name of ["工作台", "智能对话", "项目管理", "Datasheet", "知识笔记", "工作模板", "格式转换", "邮件助手", "日历与待办", "科学计算器", "常用软件"]) {
+      navigate(name);
+      const button = within(screen.getByRole("navigation",{name:"当前模块功能"})).getByRole("button",{name});
       expect(screen.getByRole("heading", { name, level: 1 })).toBeInTheDocument();
       expect(button).toHaveAttribute("aria-current", "page");
       expect(navigation.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
@@ -76,7 +86,7 @@ describe("App", () => {
     for (const [shortcut, destination] of [["新建对话", "智能对话"], ["导入资料", "Datasheet"], ["管理项目", "项目管理"]]) {
       fireEvent.click(within(screen.getByRole("region", { name: "快速开始" })).getByRole("button", { name: new RegExp(shortcut) }));
       expect(screen.getByRole("heading", { name: destination, level: 1 })).toBeInTheDocument();
-      fireEvent.click(within(screen.getByRole("navigation", { name: "主导航" })).getByRole("button", { name: "工作台" }));
+      navigate("工作台");
     }
   });
 
@@ -85,10 +95,10 @@ describe("App", () => {
     render(<App />);
     expect(document.documentElement.dataset.theme).toBe("light");
     const navigation = screen.getByRole("navigation", { name: "主导航" });
-    fireEvent.click(within(navigation).getByRole("button", { name: "科学计算器" }));
+    navigate("科学计算器");
     fireEvent.change(screen.getByLabelText("科学计算表达式"), { target: { value: "2+3" } });
-    fireEvent.click(within(navigation).getByRole("button", { name: "工作台" }));
-    fireEvent.click(within(navigation).getByRole("button", { name: "科学计算器" }));
+    navigate("工作台");
+    navigate("科学计算器");
     expect(screen.getByLabelText("科学计算表达式")).toHaveValue("");
     expect(document.documentElement.dataset.theme).toBe("light");
   });
@@ -103,19 +113,21 @@ describe("App", () => {
         return Promise.resolve({ projectCount: 0, conversationCount: 0, skillCount: 0, mailAccountCount: 0, cachedMailCount: 0, recentProjects: [], recentDocuments: [], recentConversations: [] });
       }
       if (command === "has_model_secret") return Promise.resolve(false);
+      if (command === "load_workspace_state") return Promise.resolve(null);
+      if (command === "save_workspace_state") return Promise.resolve();
       return new Promise(() => undefined);
     });
 
     render(<App />);
     expect(await screen.findByText(/当前为独立 Demo/)).toBeInTheDocument();
     await waitFor(() => expect(window.localStorage.getItem(modelEndpointsStorageKey)).toContain("embedded-demo-model"));
-    fireEvent.click(screen.getByRole("button", { name: "智能对话" }));
+    navigate("智能对话");
     expect(await screen.findByRole("option", { name: /内置 Demo 模型/ })).toBeInTheDocument();
   });
 
   it("opens the Datasheet workspace from navigation", () => {
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Datasheet" }));
+    navigate("Datasheet");
 
     expect(screen.getByRole("heading", { name: "Datasheet", level: 1 })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Datasheet 分析", level: 2 })).toBeInTheDocument();
@@ -127,12 +139,12 @@ describe("App", () => {
     render(<App />);
 
     for (const name of ["日历与待办", "知识笔记", "科学计算器", "常用软件"]) {
-      fireEvent.click(screen.getByRole("button", { name }));
+      navigate(name);
       expect(screen.getByRole("heading", { name, level: 1 })).toBeInTheDocument();
       const workspaceHeading = name === "知识笔记" ? "个人知识笔记" : name;
       expect(screen.getByRole("heading", { name: workspaceHeading, level: 2 })).toBeInTheDocument();
     }
-    fireEvent.click(screen.getByRole("button", { name: "科学计算器" }));
+    navigate("科学计算器");
     expect(screen.getByLabelText("科学计算表达式")).toHaveValue("");
   });
 
@@ -178,6 +190,8 @@ describe("App", () => {
         modelEndpointsJson: "[]",
         outputDirectory: "/synthetic/export",
       }));
+      if (command === "load_workspace_state") return Promise.resolve(null);
+      if (command === "save_workspace_state") return Promise.resolve();
       return new Promise(() => undefined);
     });
     render(<App />);
@@ -200,6 +214,8 @@ describe("App", () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === "list_audit_events") return Promise.resolve([]);
       if (command === "restore_local_data") return Promise.reject(new Error("invalid backup"));
+      if (command === "load_workspace_state") return Promise.resolve(null);
+      if (command === "save_workspace_state") return Promise.resolve();
       return new Promise(() => undefined);
     });
     render(<App />);
@@ -226,6 +242,8 @@ describe("App", () => {
     dialogOpenMock.mockResolvedValue("/synthetic/empty.icwb");
     invokeMock.mockImplementation((command: string) => {
       if (command === "restore_local_data") return Promise.resolve(JSON.stringify({ preferencesJson: "", modelEndpointsJson: "", outputDirectory: "" }));
+      if (command === "load_workspace_state") return Promise.resolve(null);
+      if (command === "save_workspace_state") return Promise.resolve();
       return new Promise(() => undefined);
     });
     window.localStorage.setItem(modelEndpointsStorageKey, '[{"id":"stale-endpoint"}]');
@@ -244,6 +262,8 @@ describe("App", () => {
       if (command === "get_network_access") return Promise.resolve(false);
       if (command === "set_network_access") return Promise.resolve(Boolean(args?.enabled));
       if (command === "list_audit_events") return Promise.resolve([]);
+      if (command === "load_workspace_state") return Promise.resolve(null);
+      if (command === "save_workspace_state") return Promise.resolve();
       return new Promise(() => undefined);
     });
     render(<App />);
@@ -263,7 +283,7 @@ describe("App", () => {
 
     expect(screen.getByText(/已授权本页/)).toBeInTheDocument();
     expect(screen.getByLabelText("仅询问当前页面")).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "Datasheet" }));
+    navigate("Datasheet");
 
     expect(screen.getByText("尚未授权页面内容")).toBeInTheDocument();
     expect(screen.getByLabelText("仅询问当前页面")).toBeDisabled();
@@ -272,7 +292,7 @@ describe("App", () => {
 
   it("creates a local conversation draft without implying a model request", () => {
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "智能对话" }));
+    navigate("智能对话");
     fireEvent.click(screen.getByRole("button", { name: /新建对话/ }));
     fireEvent.change(screen.getByLabelText("对话内容"), {
       target: { value: "检查这个偏置电路的设计约束" },
@@ -302,12 +322,14 @@ describe("App", () => {
       if (command === "load_pdf_data_url") {
         return Promise.resolve("data:application/pdf;base64,JVBERi0xLjQ=");
       }
-      if (command === "export_markdown" || command === "export_pdf") return Promise.resolve();
+      if (command === "export_converted_document") return Promise.resolve();
+      if (command === "load_workspace_state") return Promise.resolve(null);
+      if (command === "save_workspace_state") return Promise.resolve();
       return new Promise(() => undefined);
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "格式转换" }));
+    navigate("格式转换");
     fireEvent.click(screen.getByRole("button", { name: "选择文件 / 批量转换" }));
 
     expect(await screen.findByText("已在本机转换 2 个文档。")).toBeInTheDocument();
@@ -315,12 +337,12 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: /PDFspec\.pdf/ }));
     expect(screen.getByRole("heading", { name: "参数", level: 2 })).toBeInTheDocument();
     expect(screen.getByText("需要人工复核页码映射。")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "另存为 .md" }));
+    fireEvent.click(screen.getByRole("button", { name: "另存为新文件" }));
 
-    expect(await screen.findByText("已导出 spec.md。")).toBeInTheDocument();
+    expect(await screen.findByText("已导出 notes.md。")).toBeInTheDocument();
     expect(invokeMock).toHaveBeenCalledWith(
-      "export_markdown",
-      expect.objectContaining({ path: "/synthetic/notes.md", content: expect.stringContaining("# spec.pdf") }),
+      "export_converted_document",
+      expect.objectContaining({ path: "/synthetic/notes.md", format: "md", body: expect.stringContaining("# spec.pdf"), sourcePaths: ["/synthetic/notes.txt", "/synthetic/spec.pdf"] }),
     );
   });
 
@@ -373,11 +395,13 @@ describe("App", () => {
         ]);
       }
       if (command === "remove_project") return Promise.resolve();
+      if (command === "load_workspace_state") return Promise.resolve(null);
+      if (command === "save_workspace_state") return Promise.resolve();
       return new Promise(() => undefined);
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "项目管理" }));
+    navigate("项目管理");
     fireEvent.click(screen.getByRole("button", { name: "添加本地项目" }));
 
     expect(await screen.findByText(/已授权并索引 1 个文档/)).toBeInTheDocument();
@@ -415,8 +439,8 @@ describe("App", () => {
     dialogOpenMock.mockResolvedValue("/synthetic/synthetic-datasheet.pdf");
     dialogSaveMock.mockResolvedValue("/synthetic/synthetic-datasheet-overview.md");
     invokeMock.mockImplementation((command: string) => {
-      if (command === "convert_document") {
-        return Promise.resolve({
+      if (command === "register_review_source" || command === "load_review_source") {
+        return Promise.resolve({ id: "source-synthetic", document: {
           id: "doc-datasheet",
           markdown: "# synthetic-datasheet.pdf\n\n## 第 1 页\n\nSupply current 180 uA",
           pageCount: 2,
@@ -424,7 +448,7 @@ describe("App", () => {
           sourceKind: "PDF",
           sourceName: "synthetic-datasheet.pdf",
           warnings: ["复杂表格需要人工复核。"],
-        });
+        } });
       }
       if (command === "send_chat_completion") {
         return Promise.resolve({
@@ -435,16 +459,21 @@ describe("App", () => {
       if (command === "load_pdf_data_url") {
         return Promise.resolve("data:application/pdf;base64,JVBERi0xLjQ=");
       }
-      if (command === "export_markdown" || command === "export_pdf") return Promise.resolve();
+      if (command === "export_markdown" || command === "export_pdf" || command === "validate_review_citation") return Promise.resolve();
+      if (command === "load_workspace_state") return Promise.resolve(null);
+      if (command === "save_workspace_state") return Promise.resolve();
       return new Promise(() => undefined);
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Datasheet" }));
+    navigate("Datasheet");
     fireEvent.click(screen.getByRole("button", { name: "导入 PDF Datasheet" }));
     expect(await screen.findByText(/已在本机按页提取 2 页/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "按页文本" }));
-    expect(screen.getByRole("heading", { name: "第 1 页", level: 2 })).toBeInTheDocument();
+    expect(screen.getByLabelText("当前页原文")).toHaveTextContent("Supply current 180 uA");
+    fireEvent.click(screen.getByRole("button", { name: "引用本页" }));
+    expect(await screen.findByText(/已保留第 1 页原文/)).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("validate_review_citation", { citation: expect.objectContaining({ page: 1, quote: "Supply current 180 uA", version: "doc-datasheet", sourceId: "source-synthetic" }) });
 
     fireEvent.click(screen.getByRole("button", { name: "生成可追溯概略版" }));
     expect(await screen.findByText("180 uA")).toBeInTheDocument();
@@ -486,11 +515,15 @@ describe("App", () => {
         records = [{ ...record, enabled: Boolean(args?.enabled) }];
         return Promise.resolve(records[0]);
       }
+      if (command === "load_workspace_state") return Promise.resolve(null);
+      if (command === "save_workspace_state") return Promise.resolve();
       return new Promise(() => undefined);
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Skills" }));
+    navigate("智能对话");
+    await screen.findByLabelText("本次对话 Skill");
+    navigate("Skills");
     fireEvent.click(screen.getByRole("button", { name: "导入 Skill 目录" }));
 
     expect(await screen.findByText(/说明型 Skill 已导入并保持停用/)).toBeInTheDocument();
@@ -501,6 +534,15 @@ describe("App", () => {
       skillId: record.id,
       enabled: true,
     });
+    navigate("智能对话");
+    await screen.findByRole("option", { name: record.name });
+    fireEvent.change(screen.getByLabelText("本次对话 Skill"), { target: { value: record.id } });
+    navigate("Skills");
+    fireEvent.click(await screen.findByRole("button", { name: "停用" }));
+    await screen.findByText("Skill 已停用。");
+    navigate("智能对话");
+    await waitFor(() => expect(screen.queryByRole("option", { name: record.name })).not.toBeInTheDocument());
+    expect(screen.getByLabelText("本次对话 Skill")).toHaveValue("");
   });
 
   it("injects only an explicitly selected prompt Skill into a model request", async () => {
@@ -524,7 +566,7 @@ describe("App", () => {
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "智能对话" }));
+    navigate("智能对话");
     fireEvent.click(screen.getByRole("button", { name: "管理模型 API" }));
     fireEvent.click(screen.getByRole("button", { name: "连接检测" }));
     expect(await screen.findByText("连接已验证")).toBeInTheDocument();
@@ -561,12 +603,14 @@ describe("App", () => {
       if (command === "save_mail_account") { saved = true; return Promise.resolve(account); }
       if (command === "save_mail_secrets") return Promise.resolve();
       if (command === "has_mail_secrets") return Promise.resolve(true);
-      if (command === "send_mail") return Promise.resolve();
+      if (command === "send_mail") return Promise.resolve({ simulated: false });
+      if (command === "load_workspace_state") return Promise.resolve(null);
+      if (command === "save_workspace_state") return Promise.resolve();
       return new Promise(() => undefined);
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "邮件助手" }));
+    navigate("邮件助手");
     fireEvent.change(screen.getByLabelText("显示名称"), { target: { value: "工程邮箱" } });
     fireEvent.change(screen.getByLabelText("邮箱地址"), { target: { value: account.address } });
     fireEvent.change(screen.getByLabelText("登录用户名"), { target: { value: account.username } });
@@ -594,7 +638,7 @@ describe("App", () => {
 
   it("attaches an explicitly selected supported local image", async () => {
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "智能对话" }));
+    navigate("智能对话");
     const image = new File(
       [new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])],
       "synthetic.png",
@@ -640,11 +684,13 @@ describe("App", () => {
         warnings: ["复杂版式需要人工复核。"],
       });
       if (command === "save_conversation") return Promise.resolve();
+      if (command === "load_workspace_state") return Promise.resolve(null);
+      if (command === "save_workspace_state") return Promise.resolve();
       return new Promise(() => undefined);
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "智能对话" }));
+    navigate("智能对话");
     fireEvent.click(screen.getByRole("button", { name: "＋ 文档" }));
     expect(await screen.findByText(/bias-notes\.docx/)).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("对话内容"), { target: { value: "复核文档参数" } });
@@ -667,7 +713,7 @@ describe("App", () => {
 
   it("checks endpoint metadata without making a network claim", async () => {
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "智能对话" }));
+    navigate("智能对话");
     fireEvent.click(screen.getByRole("button", { name: "管理模型 API" }));
     fireEvent.click(screen.getByRole("button", { name: "检查配置" }));
 
@@ -678,7 +724,7 @@ describe("App", () => {
 
   it("edits a configured model endpoint and requires a new connection test", async () => {
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "智能对话" }));
+    navigate("智能对话");
     fireEvent.click(screen.getByRole("button", { name: "管理模型 API" }));
     fireEvent.click(screen.getByRole("button", { name: "编辑" }));
     fireEvent.change(screen.getByLabelText("本地 OpenAI 兼容服务 编辑名称"), {
@@ -714,7 +760,7 @@ describe("App", () => {
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "智能对话" }));
+    navigate("智能对话");
     fireEvent.click(screen.getByRole("button", { name: "管理模型 API" }));
     fireEvent.click(screen.getByRole("button", { name: "连接检测" }));
 
@@ -741,16 +787,18 @@ describe("App", () => {
         return Promise.resolve({ content: "## 页面回答\n\n请复核来源。", requestId: "req-float" });
       }
       if (command === "save_conversation") return Promise.resolve();
+      if (command === "load_workspace_state") return Promise.resolve(null);
+      if (command === "save_workspace_state") return Promise.resolve();
       return new Promise(() => undefined);
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "智能对话" }));
+    navigate("智能对话");
     fireEvent.click(screen.getByRole("button", { name: "管理模型 API" }));
     fireEvent.click(screen.getByRole("button", { name: "连接检测" }));
     expect(await screen.findByText("连接已验证")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Datasheet" }));
+    navigate("Datasheet");
     fireEvent.click(screen.getByRole("button", { name: "打开浮空助手" }));
     fireEvent.click(screen.getByRole("button", { name: "授权当前页面" }));
     fireEvent.change(screen.getByLabelText("仅询问当前页面"), {
@@ -790,7 +838,7 @@ describe("App", () => {
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "智能对话" }));
+    navigate("智能对话");
 
     expect(await screen.findAllByText("已恢复会话")).toHaveLength(2);
     expect(screen.getByText("来自 SQLite 的内容")).toBeInTheDocument();
@@ -805,7 +853,7 @@ describe("App", () => {
     });
 
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "智能对话" }));
+    navigate("智能对话");
     fireEvent.click(screen.getByRole("button", { name: "管理模型 API" }));
     fireEvent.change(screen.getByLabelText("本地 OpenAI 兼容服务 API 密钥"), {
       target: { value: "synthetic-test-token" },

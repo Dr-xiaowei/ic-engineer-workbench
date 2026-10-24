@@ -17,9 +17,9 @@ const forbiddenNames = [
   /^\.env(?:\.|$)/i,
   /\.(?:key|pem|p12|pfx)$/i,
 ];
-const forbiddenContent = [...new Set([homedir(), appRoot])]
+const forbiddenContent = [...new Set([homedir(), appRoot].flatMap((path) => [path, path.replaceAll("\\", "/")]))]
   .filter((value) => value.length > 1)
-  .map((value) => Buffer.from(value));
+  .flatMap((value) => [Buffer.from(value, "utf8"), Buffer.from(value, "utf16le")]);
 const failures = [];
 let fileCount = 0;
 

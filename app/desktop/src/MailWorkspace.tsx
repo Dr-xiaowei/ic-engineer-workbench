@@ -1,3 +1,5 @@
+import { useWorkspaceState } from "./workspace-state";
+import DraftStatus from "./DraftStatus";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -38,6 +40,20 @@ function formatBytes(value: number) {
   return value < 1024 * 1024 ? `${Math.ceil(value / 1024)} KiB` : `${(value / 1024 / 1024).toFixed(1)} MiB`;
 }
 
+// Keep the server's folder identifier for commands; decode only its display label.
+export function mailFolderLabel(folder: string) {
+  return folder.replace(/&([^-]*)-/g, (original, encoded: string) => {
+    if (!encoded) return "&";
+    try {
+      const bytes = atob(encoded.replaceAll(",", "/"));
+      if (bytes.length % 2) return original;
+      let text = "";
+      for (let i = 0; i < bytes.length; i += 2) text += String.fromCharCode((bytes.charCodeAt(i) << 8) | bytes.charCodeAt(i + 1));
+      return text;
+    } catch { return original; }
+  });
+}
+
 export default function MailWorkspace() {
   const [accounts, setAccounts] = useState<MailAccount[]>([]);
   const [activeId, setActiveId] = useState("");
@@ -54,7 +70,10 @@ export default function MailWorkspace() {
   const [messages, setMessages] = useState<MailMessage[]>([]);
   const [selectedUid, setSelectedUid] = useState<number>();
   const [query, setQuery] = useState("");
-  const [composer, setComposer] = useState<Composer>();
+  const [mailDraft, setMailDraft, draftState, retryDraft] = useWorkspaceState("mail-draft", { composer: null as Composer | null, accountId: "" });
+  const composer = mailDraft.composer;
+  const setComposer = (value?: Composer) => setMailDraft({ composer: value ?? null, accountId: activeId });
+  const [composerOpen, setComposerOpen] = useState(false);
   const [confirmSend, setConfirmSend] = useState(false);
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [attachmentPreview, setAttachmentPreview] = useState<AttachmentPreview>();
@@ -150,6 +169,8 @@ export default function MailWorkspace() {
   }
 
   function compose(mode?: "reply" | "forward") {
+    if (composer) { setActiveId(mailDraft.accountId); setComposerOpen(true); setNotice("已恢复未发送草稿；发送前请复核发件账户、收件人及附件。"); return; }
+    setComposerOpen(true);
     if (!selected || !mode) { setComposer(emptyComposer); return; }
     if (mode === "reply") setComposer({ ...emptyComposer, to: selected.sender, subject: `Re: ${selected.subject}`, body: `\n\n--- 原邮件 ---\n${selected.bodyText}` });
     else setComposer({ ...emptyComposer, subject: `Fwd: ${selected.subject}`, body: `\n\n--- 转发邮件 ---\n发件人：${selected.sender}\n收件人：${selected.recipients}\n${selected.bodyText}` });
@@ -163,14 +184,14 @@ export default function MailWorkspace() {
   }
 
   async function sendConfirmed() {
-    if (!active || !composer) return; setBusy(true);
+    if (!active || !composer || mailDraft.accountId !== active.id) { setNotice("请在草稿中重新确认发件账户。 "); return; } setBusy(true);
     try {
-      await invoke("send_mail", {
+      const result = await invoke<{ simulated: boolean }>("send_mail", {
         accountId: active.id,
         draft: { to: addresses(composer.to), cc: addresses(composer.cc), subject: composer.subject, body: composer.body, attachmentPaths: composer.attachmentPaths },
         confirmed: true,
       });
-      setComposer(undefined); setConfirmSend(false); setNotice("SMTP 已确认接收邮件。可同步已发送文件夹核对服务端副本。");
+      setComposer(undefined); setConfirmSend(false); setNotice(result.simulated ? "Demo 发送模拟已完成；没有连接 SMTP，也没有投递真实邮件。" : "SMTP 已确认接收邮件。可同步已发送文件夹核对服务端副本。");
     } catch (error) { setNotice(safeError(error, "邮件发送失败。")); setConfirmSend(false); }
     finally { setBusy(false); }
   }
@@ -189,7 +210,7 @@ export default function MailWorkspace() {
       <header className="workspace-action-header">
         <div><p className="eyebrow">INTRANET MAIL CLIENT</p><h2 id="mail-title">本地邮箱</h2><p>邮件只读同步并缓存在本机；密码只存系统凭据库，发送前始终再次人工确认。</p></div>
         <div className="mail-header-actions">
-          {active ? <button className="secondary-button" type="button" onClick={() => compose()}>写邮件</button> : null}
+          {active ? <button className="secondary-button" type="button" onClick={() => compose()}>{composer ? "继续邮件草稿" : "写邮件"}</button> : null}
           {active ? <button className="primary-button" type="button" disabled={busy || !configured[active.id]} onClick={testConnection}>{busy ? "处理中…" : "检测 IMAP / SMTP"}</button> : null}
         </div>
       </header>
@@ -199,7 +220,7 @@ export default function MailWorkspace() {
           <div className="mail-aside-title"><p className="eyebrow">ACCOUNTS</p><button type="button" aria-label="添加邮箱账户" onClick={() => setShowAccountForm(true)}>＋</button></div>
           {accounts.map((account) => <button className={account.id === active?.id ? "active" : ""} key={account.id} type="button" onClick={() => { setActiveId(account.id); setShowAccountForm(false); setFolder("INBOX"); }}><span>{connected[account.id] ? "● 已验证" : configured[account.id] ? "○ 已配置" : "○ 缺少凭据"}</span><strong>{account.displayName}</strong><small>{account.address}</small></button>)}
           {!accounts.length ? <div className="conversion-empty">尚未添加邮箱</div> : null}
-          {active && !showAccountForm ? <><p className="mail-folder-label">文件夹</p>{folders.map((item) => <button className={item === folder ? "active" : ""} key={item} type="button" onClick={() => setFolder(item)}><strong>{item}</strong></button>)}<button className="mail-delete" type="button" onClick={deleteAccount}>{deleteArmed ? "确认移除" : "移除本机账户"}</button></> : null}
+          {active && !showAccountForm ? <><p className="mail-folder-label">文件夹</p>{folders.map((item) => <button className={item === folder ? "active" : ""} key={item} type="button" onClick={() => setFolder(item)}><strong>{mailFolderLabel(item)}</strong></button>)}<button className="mail-delete" type="button" onClick={deleteAccount}>{deleteArmed ? "确认移除" : "移除本机账户"}</button></> : null}
         </aside>
         <main className="mail-main">
           {showAccountForm ? (
@@ -230,8 +251,8 @@ export default function MailWorkspace() {
           ) : null}
         </main>
       </div>
-      {composer ? <div className="mail-modal-backdrop"><form className="mail-composer" onSubmit={(event) => { event.preventDefault(); setConfirmSend(true); }}><header><div><p className="eyebrow">COMPOSE</p><h3>写邮件</h3></div><button type="button" aria-label="关闭写邮件" onClick={() => setComposer(undefined)}>×</button></header><label>收件人<input required value={composer.to} onChange={(e) => setComposer({ ...composer, to: e.target.value })} placeholder="可用逗号或分号分隔" /></label><label>抄送<input value={composer.cc} onChange={(e) => setComposer({ ...composer, cc: e.target.value })} /></label><label>主题<input required maxLength={500} value={composer.subject} onChange={(e) => setComposer({ ...composer, subject: e.target.value })} /></label><label>正文<textarea required value={composer.body} onChange={(e) => setComposer({ ...composer, body: e.target.value })} /></label><div className="mail-compose-files"><button type="button" onClick={chooseAttachments}>选择本地附件</button>{composer.attachmentPaths.map((path) => <small key={path}>{path.split(/[\\/]/).pop()}</small>)}</div><footer><span>发送会连接 {active?.smtpHost}:{active?.smtpPort}</span><button className="primary-button" type="submit" disabled={busy}>检查并准备发送</button></footer></form></div> : null}
-      {confirmSend && composer ? <div className="mail-modal-backdrop mail-confirm"><section role="dialog" aria-modal="true" aria-labelledby="send-confirm-title"><p className="eyebrow">HUMAN CONFIRMATION</p><h3 id="send-confirm-title">确认发送这封邮件？</h3><p>收件人：{addresses(composer.to).join("、")}<br/>主题：{composer.subject}<br/>附件：{composer.attachmentPaths.length} 个</p><div><button type="button" onClick={() => setConfirmSend(false)}>返回修改</button><button className="primary-button" type="button" disabled={busy} onClick={sendConfirmed}>{busy ? "发送中…" : "确认并发送"}</button></div></section></div> : null}
+      {composer && composerOpen ? <div className="mail-modal-backdrop"><form className="mail-composer" onSubmit={(event) => { event.preventDefault(); setConfirmSend(true); }}><DraftStatus state={draftState} retry={retryDraft}/><header><div><p className="eyebrow">COMPOSE</p><h3>写邮件</h3></div><button type="button" aria-label="关闭写邮件" onClick={() => setComposerOpen(false)}>×</button></header><label>发件账户<select aria-label="草稿发件账户" required value={mailDraft.accountId} onChange={e => { setActiveId(e.target.value); setMailDraft({ ...mailDraft, accountId: e.target.value }); }}><option value="">请选择</option>{accounts.map(account => <option key={account.id} value={account.id}>{account.address}</option>)}</select></label><label>收件人<input required value={composer.to} onChange={(e) => setComposer({ ...composer, to: e.target.value })} placeholder="可用逗号或分号分隔" /></label><label>抄送<input value={composer.cc} onChange={(e) => setComposer({ ...composer, cc: e.target.value })} /></label><label>主题<input required maxLength={500} value={composer.subject} onChange={(e) => setComposer({ ...composer, subject: e.target.value })} /></label><label>正文<textarea required value={composer.body} onChange={(e) => setComposer({ ...composer, body: e.target.value })} /></label><div className="mail-compose-files"><button type="button" onClick={chooseAttachments}>选择本地附件</button>{composer.attachmentPaths.map((path) => <small key={path}>{path.split(/[\\/]/).pop()}</small>)}</div><footer><button type="button" onClick={() => { if (window.confirm("确认丢弃这封未发送邮件的草稿？")) { setComposer(undefined); setComposerOpen(false); } }}>丢弃草稿</button><span>发送会连接 {active?.smtpHost}:{active?.smtpPort}</span><button className="primary-button" type="submit" disabled={busy}>检查并准备发送</button></footer></form></div> : null}
+      {confirmSend && composer ? <div className="mail-modal-backdrop mail-confirm"><section role="dialog" aria-modal="true" aria-labelledby="send-confirm-title"><p className="eyebrow">HUMAN CONFIRMATION</p><h3 id="send-confirm-title">确认发送这封邮件？</h3><p>发件账户：{accounts.find(account => account.id === mailDraft.accountId)?.address || "未确认"}<br/>收件人：{addresses(composer.to).join("、")}<br/>主题：{composer.subject}<br/>附件：{composer.attachmentPaths.length} 个</p><div><button type="button" onClick={() => setConfirmSend(false)}>返回修改</button><button className="primary-button" type="button" disabled={busy} onClick={sendConfirmed}>{busy ? "发送中…" : "确认并发送"}</button></div></section></div> : null}
       {attachmentPreview ? <div className="mail-modal-backdrop"><section className="attachment-preview" role="dialog" aria-modal="true" aria-label="邮件附件预览"><header><div><p className="eyebrow">SAFE ATTACHMENT PREVIEW</p><h3>{attachmentPreview.name}</h3></div><button onClick={()=>setAttachmentPreview(undefined)}>×</button></header>{attachmentPreview.kind==="pdf"?<PdfReader title="邮件 PDF 附件" source={attachmentPreview.content}/>:<MarkdownMessage text={attachmentPreview.content}/>}</section></div>:null}
     </section>
   );

@@ -1,0 +1,30 @@
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, expect, it, vi } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
+import { appendToNote, emptyNote, openSource, type Citation } from "./review-flow";
+import { updateWorkspaceState, flushWorkspaceStates } from "./workspace-state";
+import KnowledgeWorkspace from "./KnowledgeWorkspace";
+import WorkTemplates from "./WorkTemplates";
+vi.mock("@tauri-apps/api/core",()=>({invoke:vi.fn()}));vi.mock("@tauri-apps/plugin-dialog",()=>({open:vi.fn(),save:vi.fn()}));
+let disk:Record<string,unknown>, notes:unknown[];
+beforeEach(()=>{disk={};notes=[];vi.mocked(invoke).mockImplementation(async(command,args)=>{const a=args as Record<string,unknown>;if(command==="load_workspace_state")return disk[a.key as string]??null;if(command==="save_workspace_state"){disk[a.key as string]=a.value;return;}if(command==="list_notes")return notes;if(command==="list_projects")return [{id:"project-test",name:"合成带隙项目"}];if(command==="list_skills")return [];if(command==="get_notes_root")return null;if(command==="save_note"){const input=a.input as Record<string,unknown>;const note={...input,id:input.id||"note-test",updatedAt:1,createdAt:1};notes=[note];return note;}if(command==="save_calendar_task")return {...a.input as object,id:"task-test"};});});
+it("appends evidence without replacing a draft, saves project association, and creates a task only after confirmation",async()=>{
+  await updateWorkspaceState("note-draft",emptyNote,()=>({...emptyNote,title:"已有评审",body:"原有思路"}));
+  const citation:Citation={sourceId:"source-one",sourceName:"合成.pdf",version:"123456abcdef",page:2,quote:"PSRR 60 dB at 1 kHz"};
+  await appendToNote("新评审","证据：PSRR 60 dB",[citation],"project-test");
+  render(<KnowledgeWorkspace/>);await waitFor(()=>expect(screen.getByLabelText("笔记内容")).toHaveValue("原有思路\n\n证据：PSRR 60 dB"));
+  expect(screen.getByLabelText("笔记关联项目")).toHaveValue("project-test");
+  fireEvent.click(screen.getByText("保存笔记"));await screen.findByText(/笔记已保存到本机数据库/);
+  expect(vi.mocked(invoke).mock.calls.find(([c])=>c==="save_note")?.[1]).toEqual({input:expect.objectContaining({projectId:"project-test",citations:[citation]})});
+  fireEvent.click(screen.getByText("从评审创建待办"));expect(vi.mocked(invoke).mock.calls.some(([c])=>c==="save_calendar_task")).toBe(false);
+  fireEvent.change(screen.getByLabelText("待办名称"),{target:{value:"复核 PSRR 的测量条件"}});fireEvent.click(screen.getByText("确认创建待办"));await screen.findByText(/已按确认内容创建待办/);
+  expect(vi.mocked(invoke).mock.calls.find(([c])=>c==="save_calendar_task")?.[1]).toEqual({input:expect.objectContaining({title:"复核 PSRR 的测量条件",projectId:"project-test",notes:expect.stringContaining("note-test")})});
+  await act(async()=>{await openSource(citation.sourceId,2,"project-test");});expect(disk.reader).toEqual(expect.objectContaining({sourceId:"source-one",page:2,projectId:"project-test"}));
+});
+it("fills a work template and prefills the assistant without making a model request",async()=>{
+  render(<WorkTemplates/>);await screen.findByText("草稿自动保存在本机");
+  fireEvent.change(screen.getByLabelText("项目 / 模块"),{target:{value:"低功耗带隙基准"}});
+  fireEvent.click(screen.getByText("交给助手继续"));await waitFor(()=>expect(disk["chat-draft"]).toEqual(expect.objectContaining({text:expect.stringContaining("低功耗带隙基准")})));
+  expect(vi.mocked(invoke).mock.calls.some(([c])=>c.startsWith("send_chat")||c==="save_calendar_task")).toBe(false);
+  await act(flushWorkspaceStates);
+});

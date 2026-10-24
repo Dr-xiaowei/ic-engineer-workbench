@@ -53,12 +53,23 @@ pub fn seed_demo_workspace(app: tauri::AppHandle) -> Result<(), String> {
     connection.execute("INSERT OR IGNORE INTO notes(id,title,body) VALUES('note-demo-datasheet','Datasheet 阅读检查单','## 阅读目标\n\n- [x] 核对供电范围\n- [ ] 复核绝对最大额定值\n\n| 参数 | 合成值 | 状态 |\n|---|---:|---|\n| VDD | 1.8 V | 已摘录 |\n| Ibias | 10 uA | 待复核 |')",[]).map_err(|_|"无法初始化合成笔记。".to_string())?;
     connection.execute("INSERT OR IGNORE INTO notes(id,title,body) VALUES('note-demo-review','本周评审记录','## 已完成\n\n完成规格表与测试条件整理。\n\n## 风险\n\n> 以下仅为合成演示内容。\n\n温度角覆盖仍需人工确认。')",[]).map_err(|_|"无法初始化合成笔记。".to_string())?;
     connection.execute("INSERT OR IGNORE INTO skills(id,name,description,instructions,source_name,enabled,version,source_type,permissions_json) VALUES('skill-demo-review','合成评审检查','按来源、单位、条件和未确认项复核工程摘要。','# 合成评审检查\n\n1. 保留来源位置。\n2. 保留单位和测试条件。\n3. 不确定内容标记待复核。','内置合成示例',1,'1.0.0','demo','[\"prompt\"]')",[]).map_err(|_|"无法初始化合成 Skill。".to_string())?;
-    let calculator = "/System/Applications/Calculator.app";
-    if fs::metadata(calculator)
-        .map(|m| m.is_dir())
-        .unwrap_or(false)
-    {
-        let _=connection.execute("INSERT OR IGNORE INTO software_launchers(id,name,target_path,target_kind) VALUES('software-demo-calculator','系统计算器（演示）',?1,'application')",params![calculator]);
+    #[cfg(target_os = "macos")]
+    let calculator = Some(std::path::PathBuf::from(
+        "/System/Applications/Calculator.app",
+    ));
+    #[cfg(windows)]
+    let calculator = std::env::var_os("SystemRoot").map(|root| {
+        std::path::PathBuf::from(root)
+            .join("System32")
+            .join("calc.exe")
+    });
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let calculator: Option<std::path::PathBuf> = None;
+    if let Some((target, kind)) = calculator.and_then(|p| {
+        p.to_str()
+            .and_then(|s| crate::software::validate_target(s).ok())
+    }) {
+        let _ = connection.execute("INSERT OR IGNORE INTO software_launchers(id,name,target_path,target_kind) VALUES('software-demo-calculator','系统计算器（演示）',?1,?2)", params![target.to_str(), kind]);
     }
     record_audit(&app, "demo.workspace-seed", "success");
     Ok(())

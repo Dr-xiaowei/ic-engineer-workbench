@@ -1,3 +1,6 @@
+import { useDraftField, setWorkspaceState } from "./workspace-state";
+import DraftStatus from "./DraftStatus";
+import { openSource } from "./review-flow";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -64,15 +67,17 @@ function humanSize(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 }
 
+const emptyProjectView = { activeProjectId: "", query: "", analysis: "", requestId: "", hits: [] as SearchHit[], document: null as IndexedDocument | null, savedSearches: [] as string[] };
 export default function ProjectWorkspace() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
-  const [activeProjectId, setActiveProjectId] = useState("");
+  const [activeProjectId, setActiveProjectId, viewState, retryView] = useDraftField("project-view", emptyProjectView, "activeProjectId");
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
-  const [document, setDocument] = useState<IndexedDocument | null>(null);
-  const [query, setQuery] = useState("");
-  const [hits, setHits] = useState<SearchHit[]>([]);
-  const [analysis, setAnalysis] = useState("");
-  const [requestId, setRequestId] = useState("");
+  const [document, setDocument] = useDraftField("project-view", emptyProjectView, "document");
+  const [query, setQuery] = useDraftField("project-view", emptyProjectView, "query");
+  const [savedSearches, setSavedSearches] = useDraftField("project-view", emptyProjectView, "savedSearches");
+  const [hits, setHits] = useDraftField("project-view", emptyProjectView, "hits");
+  const [analysis, setAnalysis] = useDraftField("project-view", emptyProjectView, "analysis");
+  const [requestId, setRequestId] = useDraftField("project-view", emptyProjectView, "requestId");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -88,7 +93,7 @@ export default function ProjectWorkspace() {
       .then((items) => {
         if (!active) return;
         setProjects(items);
-        setActiveProjectId(items[0]?.id ?? "");
+
       })
       .catch(() => {
         if (active) setNotice("项目数据仅在桌面应用中可用。");
@@ -97,6 +102,8 @@ export default function ProjectWorkspace() {
       active = false;
     };
   }, []);
+
+  useEffect(() => { if (viewState.ready && projects.length && !projects.some(p => p.id === activeProjectId)) setActiveProjectId(projects[0].id); }, [viewState.ready, projects]);
 
   useEffect(() => {
     if (!activeProjectId) {
@@ -198,7 +205,7 @@ export default function ProjectWorkspace() {
         projectId: activeProjectId,
         query: query.trim(),
       });
-      setHits(results);
+      setWorkspaceState("project-view", emptyProjectView, current => current.activeProjectId === activeProjectId && current.query.trim() === query.trim() ? { ...current, hits: results } : current);
       setNotice(results.length ? `找到 ${results.length} 条本地来源。` : "没有找到匹配的本地来源。");
     } catch (error) {
       setNotice(safeError(error, "项目搜索失败。"));
@@ -230,8 +237,7 @@ export default function ProjectWorkspace() {
           { role: "user", content: `问题：${query.trim()}\n\n${sources}`, attachments: [] },
         ],
       });
-      setAnalysis(result.content);
-      setRequestId(result.requestId ?? "");
+      setWorkspaceState("project-view", emptyProjectView, current => current.activeProjectId === activeProjectId && current.query.trim() === query.trim() ? { ...current, analysis: result.content, requestId: result.requestId ?? "" } : current);
     } catch (error) {
       setNotice(safeError(error, "AI 分析失败，本地搜索结果仍然可用。"));
     } finally {
@@ -245,12 +251,12 @@ export default function ProjectWorkspace() {
     setAnalysis("");
     setRequestId("");
     try {
-      const candidates = await invoke<SearchHit[]>("project_semantic_candidates", { projectId: activeProjectId });
+      const candidates = await invoke<SearchHit[]>("project_semantic_candidates", { projectId: activeProjectId, query: query.trim() });
       if (!candidates.length) {
-        setNotice("当前项目没有可供语义检索的文档。 ");
+        setNotice("没有命中这些关键词；请尝试中文短词或型号，再让模型分析。 ");
         return;
       }
-      const sources = candidates
+      const sources = candidates.slice(0, 20)
         .map((hit, index) => `[来源 ${index + 1}] ${hit.relativePath}\n${hit.snippet}`)
         .join("\n\n")
         .slice(0, 28_000);
@@ -267,17 +273,20 @@ export default function ProjectWorkspace() {
           { role: "user", content: `问题：${query.trim()}\n\n${sources}`, attachments: [] },
         ],
       });
-      setHits(candidates);
-      setAnalysis(result.content);
-      setRequestId(result.requestId ?? "");
-      setNotice(`已对 ${candidates.length} 个本地候选文档完成 AI 语义检索；结果须按来源复核。`);
+      setWorkspaceState("project-view", emptyProjectView, current => current.activeProjectId === activeProjectId && current.query.trim() === query.trim() ? { ...current, hits: candidates } : current);
+      setWorkspaceState("project-view", emptyProjectView, current => current.activeProjectId === activeProjectId && current.query.trim() === query.trim() ? { ...current, analysis: result.content, requestId: result.requestId ?? "" } : current);
+      setNotice(`已对 ${candidates.length} 个本地候选文档完成 AI 检索分析；结果须按来源复核。`);
     } catch (error) {
-      setNotice(safeError(error, "AI 语义检索失败，未修改任何项目文件。"));
+      setNotice(safeError(error, "AI 检索分析失败，未修改任何项目文件。"));
     } finally {
       setBusy(false);
     }
   }
 
+  async function readForReview(relativePath: string) {
+    try { const result = await invoke<{id:string}>("register_project_review_source",{projectId:activeProjectId,relativePath}); await openSource(result.id,1,activeProjectId); }
+    catch(error) {setNotice(safeError(error,"无法读取项目原件，请检查授权目录。"));}
+  }
   return (
     <section className="project-workspace" aria-labelledby="project-workspace-title">
       <header className="workspace-action-header">
@@ -293,6 +302,8 @@ export default function ProjectWorkspace() {
 
       {notice ? <p className="converter-notice" role="status">{notice}</p> : null}
 
+      <DraftStatus state={viewState} retry={retryView}/>
+      <div className="saved-searches"><button className="secondary-button" disabled={!query.trim()} onClick={() => setSavedSearches(current => [...new Set([query.trim(), ...current])].slice(0, 12))}>固定当前检索</button>{savedSearches.map(term => <span key={term}><button onClick={() => setQuery(term)}>{term}</button><button aria-label={`移除检索 ${term}`} onClick={() => setSavedSearches(savedSearches.filter(t => t !== term))}>×</button></span>)}</div>
       <details className="progress-disclosure" open>
         <summary>项目进度、里程碑、重点与风险</summary>
         <ProjectProgressPanel projects={projects} />
@@ -304,6 +315,7 @@ export default function ProjectWorkspace() {
             <button
               className={project.id === activeProjectId ? "active" : ""}
               key={project.id}
+              disabled={busy}
               type="button"
               onClick={() => {
                 setActiveProjectId(project.id);
@@ -325,10 +337,10 @@ export default function ProjectWorkspace() {
             <>
               <div className="project-controls">
                 <form onSubmit={search}>
-                  <input aria-label="搜索项目文档" value={query} onChange={(event) => setQuery(event.target.value)} maxLength={500} placeholder="搜索文件内容、参数或单位…" />
+                  <input aria-label="搜索项目文档" value={query} onChange={(event) => setQuery(event.target.value)} maxLength={500} placeholder="中文短词 / 型号，多个关键词用空格分开" />
                   <button className="secondary-button" type="submit" disabled={busy || !query.trim()}>本地搜索</button>
                 </form>
-                <button className="secondary-button" type="button" disabled={busy || !endpoint || !query.trim()} onClick={semanticSearch}>{endpoint ? "AI 语义检索" : "连接模型后语义检索"}</button>
+                <button className="secondary-button" type="button" disabled={busy || !endpoint || !query.trim()} onClick={semanticSearch}>{endpoint ? "AI 检索分析" : "连接模型后分析"}</button>
                 <button className="text-button" type="button" disabled={busy} onClick={refreshProject}>更新索引</button>
                 {confirmRemove ? (
                   <button className="text-button danger" type="button" onClick={removeProject}>确认只移除记录</button>
@@ -380,7 +392,7 @@ export default function ProjectWorkspace() {
                   {document ? (
                     <>
                       {document.warnings.length ? <ul>{document.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul> : null}
-                      <MarkdownMessage text={document.markdown} />
+                      <button className="primary-button" onClick={() => readForReview(document.relativePath)}>阅读原件并引用到评审</button><MarkdownMessage text={document.markdown} />
                     </>
                   ) : (
                     <div className="conversion-placeholder"><span>▤</span><strong>选择已索引文件</strong><p>预览来自 SQLite 缓存，不会在点击时重新读取源目录。</p></div>

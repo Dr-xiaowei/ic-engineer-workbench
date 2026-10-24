@@ -35,5 +35,5 @@ for (const entry of readdirSync(store)) {
 }
 const sorted = [...records.values()].sort((a,b)=>a.name.localeCompare(b.name)||a.version.localeCompare(b.version));
 const target = join(root,"src-tauri/assets/legal");mkdirSync(target,{recursive:true});
-writeFileSync(join(target,"THIRD_PARTY_LICENSES.txt"),"Third-party dependency inventory and supplied license notices\nVersions correspond to the v1.0.0 lockfiles. Includes build/target dependencies as a conservative superset.\n\n"+sorted.map(p=>`${p.name} ${p.version}\nLicense: ${p.license}\n${p.texts.join("\n")}\n`).join("\n--------------------\n\n"));
+writeFileSync(join(target,"THIRD_PARTY_LICENSES.txt"),"Third-party dependency inventory and supplied license notices\nGenerated from the current checkout. Includes installed build/target dependencies as a conservative superset.\n\n"+sorted.map(p=>`${p.name} ${p.version}\nLicense: ${p.license}\n${p.texts.join("\n")}\n`).join("\n--------------------\n\n"));
 console.log(`Collected ${sorted.length} package notices`);

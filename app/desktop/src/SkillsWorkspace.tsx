@@ -49,6 +49,7 @@ export default function SkillsWorkspace() {
       const records = await invoke<PromptSkill[]>("list_skills");
       setSkills(records);
       setSelectedId(preferredId && records.some((skill) => skill.id === preferredId) ? preferredId : records[0]?.id ?? "");
+      window.dispatchEvent(new Event("icwb-skills-changed"));
     } catch (error) {
       setNotice(safeErrorMessage(error, "无法读取本地 Skills。"));
     }
@@ -90,6 +91,7 @@ export default function SkillsWorkspace() {
         enabled: !skill.enabled,
       });
       setSkills((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      window.dispatchEvent(new Event("icwb-skills-changed"));
       setNotice(updated.enabled ? "Skill 已启用，可在智能对话中显式选择。" : "Skill 已停用。");
     } catch (error) {
       setNotice(safeErrorMessage(error, "无法更新 Skill 状态。"));

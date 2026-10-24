@@ -6,7 +6,10 @@ import FloatingAssistant, { type AssistantPageContext } from "./FloatingAssistan
 import ConverterWorkspace from "./ConverterWorkspace";
 import ProjectWorkspace from "./ProjectWorkspace";
 import DatasheetWorkspace from "./DatasheetWorkspace";
-import SkillsWorkspace from "./SkillsWorkspace";
+import WorkTemplates from "./WorkTemplates";
+import TodayWork from "./TodayWork";
+import { emptyNote, emptyReader } from "./review-flow";
+import { useWorkspaceState, updateWorkspaceState, resetWorkspaceStores, flushWorkspaceStates } from "./workspace-state";
 import MailWorkspace from "./MailWorkspace";
 import CalendarWorkspace from "./CalendarWorkspace";
 import CalculatorWorkspace from "./CalculatorWorkspace";
@@ -75,7 +78,7 @@ const navigationItems: Array<{
   { id: "projects", label: "项目管理", icon: "◇" },
   { id: "datasheet", label: "Datasheet", icon: "▤" },
   { id: "knowledge", label: "知识笔记", icon: "▥" },
-  { id: "skills", label: "Skills", icon: "✦" },
+  { id: "skills", label: "工作模板", icon: "✦" },
   { id: "converter", label: "格式转换", icon: "⇄" },
   { id: "mail", label: "邮件助手", icon: "✉" },
   { id: "calendar", label: "日历与待办", icon: "◫" },
@@ -84,9 +87,11 @@ const navigationItems: Array<{
 ];
 
 const navigationGroups: Array<{ label: string; ids: NavigationId[] }> = [
-  { label: "工作空间", ids: ["dashboard", "chat", "projects", "calendar", "mail"] },
-  { label: "资料与知识", ids: ["datasheet", "knowledge", "skills", "converter"] },
-  { label: "常用工具", ids: ["calculator", "software"] },
+  { label: "今日", ids: ["dashboard", "calendar", "mail"] },
+  { label: "项目", ids: ["projects"] },
+  { label: "资料", ids: ["datasheet", "knowledge"] },
+  { label: "助手", ids: ["chat", "skills"] },
+  { label: "工具", ids: ["converter", "calculator", "software"] },
 ];
 
 function NavigationIcon({ id }: { id: NavigationId }) {
@@ -235,6 +240,7 @@ function SettingsPanel({
         modelEndpointsJson: window.localStorage.getItem(modelEndpointsStorageKey) ?? "",
         outputDirectory: window.localStorage.getItem("ic-workbench-output-directory-v1") ?? "",
       });
+      await flushWorkspaceStates();
       await invoke("backup_local_data", { path, uiStateJson });
       setDataNotice("本地数据库已备份。模型密钥和邮箱密码仍只在系统凭据库中，不包含在备份内。");
     } catch { setDataNotice("备份失败，现有本地数据未被修改。"); }
@@ -252,6 +258,7 @@ function SettingsPanel({
   async function restoreData() {
     if (!restorePath) { await chooseRestore(); return; }
     try {
+      await flushWorkspaceStates();
       const uiStateJson = await invoke<string>("restore_local_data", { path: restorePath, confirmed: true });
       const restored = JSON.parse(uiStateJson) as { preferencesJson?: unknown; modelEndpointsJson?: unknown; outputDirectory?: unknown };
       if (typeof restored.preferencesJson === "string") window.localStorage.setItem(preferencesStorageKey, restored.preferencesJson);
@@ -259,7 +266,9 @@ function SettingsPanel({
       if (typeof restored.outputDirectory === "string" && restored.outputDirectory.length <= 4096) window.localStorage.setItem("ic-workbench-output-directory-v1", restored.outputDirectory);
       onPreferencesChange(loadPreferences());
       setRestorePath(""); onNetworkAccessChange(false);
-      setDataNotice("本地数据恢复完成。请重新打开相关页面；系统凭据未被更改，网络保持关闭。");
+      setDataNotice("本地数据恢复完成，正在重新载入工作台。网络保持关闭。");
+      resetWorkspaceStores();
+      window.location.reload();
     } catch { setDataNotice("恢复失败，所选文件未通过校验或无法读取。"); }
   }
 
@@ -415,7 +424,7 @@ function SettingsPanel({
           <section className="setting-group">
             <div>
               <h3>本地数据备份与恢复</h3>
-              <p>备份包含配置元数据、会话、项目索引、Skills 和邮件缓存，不包含操作系统凭据库中的任何密码或密钥。</p>
+              <p>备份包含草稿、原文引用、工作模板、会话、项目索引、笔记、待办、Skills 和邮件缓存，不包含操作系统凭据库中的任何密码或密钥。</p>
             </div>
             <div className="data-actions">
               <button className="secondary-button" type="button" onClick={() => void backupData()}>导出本地备份</button>
@@ -448,6 +457,33 @@ function SettingsPanel({
 
 function App() {
   const [activeId, setActiveId] = useState<NavigationId>("dashboard");
+  const [pageNote] = useWorkspaceState("note-draft", emptyNote);
+  const [pageReader] = useWorkspaceState("reader", emptyReader);
+  const [closeError, setCloseError] = useState("");
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let cancelled = false, unlisten: (() => void) | undefined, closing = false;
+    void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
+      const current = getCurrentWindow();
+      const stop = await current.onCloseRequested(async event => {
+        event.preventDefault(); if (closing) return; closing = true;
+        try { await flushWorkspaceStates(); await current.destroy(); }
+        catch { closing = false; setCloseError("草稿尚未完成保存，窗口已保留。请在出现错误的页面重试保存后关闭。"); }
+      });
+      if (cancelled) stop(); else unlisten = stop;
+    }).catch(() => undefined);
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+  const [navigation, setNavigation] = useWorkspaceState("navigation", { pins: [] as NavigationId[] });
+  const [chatVisited, setChatVisited] = useState(false);
+  const activeGroup = navigationGroups.find(group => group.ids.includes(activeId)) ?? navigationGroups[0];
+  useEffect(() => { if (activeId === "chat") setChatVisited(true); }, [activeId]);
+  useEffect(() => {
+    const navigate = (event: Event) => { const id = (event as CustomEvent<string>).detail; if (navigationItems.some(item => item.id === id)) setActiveId(id as NavigationId); };
+    const openProject = (event: Event) => { const id = (event as CustomEvent<string>).detail; void updateWorkspaceState<Record<string, unknown>>("project-view", { activeProjectId: "", query: "", analysis: "", requestId: "", hits: [], document: null, savedSearches: [] }, current => ({ ...current, activeProjectId: id, document: null, hits: [], analysis: "" })); };
+    window.addEventListener("workbench:navigate", navigate); window.addEventListener("workbench:open-project", openProject);
+    return () => { window.removeEventListener("workbench:navigate", navigate); window.removeEventListener("workbench:open-project", openProject); };
+  }, []);
   const [preferences, setPreferences] = useState<Preferences>(loadPreferences);
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -518,13 +554,15 @@ function App() {
         summary: `本页是本地工作台概览。应用核心：${runtime?.appVersion ?? "正在检查"}；数据位置：${runtime?.dataLocation ?? "正在检查"}；网络模式：${runtime?.networkMode ?? "正在检查"}。页面提供智能对话、资料导入和项目管理入口。`,
       };
     }
+    if (activeId === "knowledge") return { id: activeId, label: activeItem.label, summary: `当前笔记：${pageNote.title || "未命名"}\n${pageNote.body.slice(0, 5000)}\n引用：${pageNote.citations.map(c => `${c.sourceName} 第 ${c.page} 页`).join("；")}` };
+    if (activeId === "datasheet" && pageReader.sourceId) return { id: activeId, label: activeItem.label, summary: `当前资料阅读位置：第 ${pageReader.page} 页。核查问题：${pageReader.question}\n用户已选的原文证据：${pageReader.highlights.map(c => `${c.sourceName} 第 ${c.page} 页：${c.quote}`).join("\n").slice(0, 6000) || "尚未选择证据"}` };
     const definition = modules[activeId];
     return {
       id: activeId,
       label: activeItem.label,
       summary: `${definition.description} 当前页面能力范围：${definition.features.join("、")}。`,
     };
-  }, [activeId, activeItem.label, runtime]);
+  }, [activeId, activeItem.label, runtime, pageNote, pageReader]);
 
   function toggleTheme() {
     setPreferences((current) => ({
@@ -545,24 +583,9 @@ function App() {
         </button>
 
         <nav aria-label="主导航">
-          {navigationGroups.map((group) => (
-            <section className="nav-group" aria-label={group.label} key={group.label}>
-              <p className="nav-group-label">{group.label}</p>
-              {group.ids.map((id) => navigationItems.find((item) => item.id === id)!).map((item) => (
-            <button
-              className={activeId === item.id ? "active" : ""}
-              aria-current={activeId === item.id ? "page" : undefined}
-              key={item.id}
-              type="button"
-              onClick={() => setActiveId(item.id)}
-            >
-              <span className="nav-icon"><NavigationIcon id={item.id} /></span>
-              {item.label}
-            </button>
-              ))}
-            </section>
-          ))}
+          {navigationGroups.map(group => <button key={group.label} className={activeGroup === group ? "active" : ""} aria-current={activeGroup === group ? "page" : undefined} onClick={() => setActiveId(group.ids[0])}><span className="nav-icon"><NavigationIcon id={group.ids[0]}/></span>{group.label}</button>)}
         </nav>
+        {navigation.pins.length ? <nav className="pinned-navigation" aria-label="常用入口"><p className="nav-group-label">我的常用</p>{navigation.pins.filter(id => navigationItems.some(item => item.id === id)).slice(0, 5).map(id => <button key={id} onClick={() => setActiveId(id)}>{navigationItems.find(item => item.id === id)?.label}</button>)}</nav> : null}
 
         <div className="sidebar-footer">
           <div className="local-badge">
@@ -580,12 +603,14 @@ function App() {
       </aside>
 
       <main className="main-content">
+        {closeError ? <p role="alert" className="converter-notice">{closeError}</p> : null}
         <header className="topbar">
           <div>
             <span className="breadcrumb">工作区 / {activeItem.label}</span>
             <h1>{activeItem.label}</h1>
           </div>
           <div className="topbar-actions">
+            <button className="text-button" aria-label={navigation.pins.includes(activeId) ? "取消固定当前功能" : "固定当前功能到常用"} onClick={() => setNavigation(current => ({ pins: current.pins.includes(activeId) ? current.pins.filter(id => id !== activeId) : [...current.pins, activeId].slice(-5) }))}>{navigation.pins.includes(activeId) ? "★ 已固定" : "☆ 固定常用"}</button>
             <button
               className="icon-button"
               type="button"
@@ -602,6 +627,8 @@ function App() {
           </div>
         </header>
 
+        <nav className="module-tabs" aria-label="当前模块功能">{activeGroup.ids.map(id => <button key={id} className={id === activeId ? "active" : ""} aria-current={id === activeId ? "page" : undefined} onClick={() => setActiveId(id)}>{navigationItems.find(item => item.id === id)?.label}</button>)}</nav>
+        {chatVisited || activeId === "chat" ? <div hidden={activeId !== "chat"}><ModelWorkspace/></div> : null}
         {activeId === "dashboard" ? (
           <section className="dashboard" aria-labelledby="dashboard-title">
             <article className="hero-panel">
@@ -616,6 +643,7 @@ function App() {
               </div>
             </article>
 
+            <TodayWork key={dashboard?.projectCount ?? 0}/>
             <section className="section-block" aria-labelledby="quick-title">
               <div className="section-heading">
                 <div>
@@ -637,7 +665,7 @@ function App() {
               </div>
             </section>
 
-            <section className="status-grid" aria-label="运行状态">
+            <details className="runtime-details"><summary>运行状态与本机信息</summary><section className="status-grid" aria-label="运行状态">
               <article>
                 <span className="metric-label">应用版本</span>
                 <strong>{runtime?.appVersion ?? "checking"}</strong>
@@ -664,7 +692,7 @@ function App() {
                 <p>账户 / 本地邮件</p>
               </article>
             </section>
-            <section className="recent-grid" aria-label="最近工作内容">
+            </details><section className="recent-grid" aria-label="最近工作内容">
               {[
                 { title: "最近项目", count: dashboard?.projectCount, items: dashboard?.recentProjects, empty: "尚未添加项目" },
                 { title: "最近文档", count: dashboard?.recentDocuments.length, items: dashboard?.recentDocuments, empty: "尚无索引文档" },
@@ -672,8 +700,6 @@ function App() {
               ].map((group) => <article key={group.title}><header><strong>{group.title}</strong><span>{group.count ?? 0}</span></header>{group.items?.length ? <ul>{group.items.map((item) => <li key={item}>{item}</li>)}</ul> : <p>{group.empty}</p>}</article>)}
             </section>
           </section>
-        ) : activeId === "chat" ? (
-          <ModelWorkspace />
         ) : activeId === "converter" ? (
           <ConverterWorkspace />
         ) : activeId === "projects" ? (
@@ -681,7 +707,7 @@ function App() {
         ) : activeId === "datasheet" ? (
           <DatasheetWorkspace />
         ) : activeId === "skills" ? (
-          <SkillsWorkspace />
+          <WorkTemplates />
         ) : activeId === "mail" ? (
           <MailWorkspace />
         ) : activeId === "calendar" ? (

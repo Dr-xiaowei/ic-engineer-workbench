@@ -1,3 +1,5 @@
+import { useDraftField } from "./workspace-state";
+import DraftStatus from "./DraftStatus";
 import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -112,9 +114,11 @@ function messageContentWithDocuments(message: Message) {
 function EndpointManager({
   endpoints,
   onChange,
+  onClose,
 }: {
   endpoints: ModelEndpoint[];
   onChange: (endpoints: ModelEndpoint[]) => void;
+  onClose: () => void;
 }) {
   const [draft, setDraft] = useState({ name: "", baseUrl: "", model: "" });
   const [error, setError] = useState("");
@@ -312,6 +316,7 @@ function EndpointManager({
           <h3>模型 API</h3>
         </div>
         <span>{endpoints.filter((endpoint) => endpoint.enabled).length} 个启用</span>
+        <button className="secondary-button" type="button" onClick={onClose} aria-label="关闭模型 API 管理">关闭</button>
       </div>
 
       <div className="endpoint-list">
@@ -433,22 +438,25 @@ function EndpointManager({
   );
 }
 
+const emptyChatDraft = { text: "", attachments: [] as ChatAttachment[], documents: [] as ChatDocumentAttachment[], endpointId: "", skillId: "", conversationId: initialConversation.id };
 export default function ModelWorkspace() {
   const [endpoints, setEndpoints] = useState<ModelEndpoint[]>(loadModelEndpoints);
-  const [activeEndpointId, setActiveEndpointId] = useState("");
+  const [activeEndpointId, setActiveEndpointId] = useDraftField("chat-draft", emptyChatDraft, "endpointId");
   const [conversations, setConversations] = useState<Conversation[]>([initialConversation]);
-  const [activeConversationId, setActiveConversationId] = useState(initialConversation.id);
-  const [draft, setDraft] = useState("");
+  const [activeConversationId, setActiveConversationId] = useDraftField("chat-draft", emptyChatDraft, "conversationId");
+  const [draft, setDraft, draftState, retryDraft] = useDraftField("chat-draft", emptyChatDraft, "text");
   const [managerOpen, setManagerOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [requestError, setRequestError] = useState("");
   const [persistenceAvailable, setPersistenceAvailable] = useState(false);
-  const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
-  const [pendingDocuments, setPendingDocuments] = useState<ChatDocumentAttachment[]>([]);
+  const [pendingAttachments, setPendingAttachments] = useDraftField("chat-draft", emptyChatDraft, "attachments");
+  const [pendingDocuments, setPendingDocuments] = useDraftField("chat-draft", emptyChatDraft, "documents");
   const [skills, setSkills] = useState<PromptSkill[]>([]);
-  const [activeSkillId, setActiveSkillId] = useState("");
+  const [skillsLoaded, setSkillsLoaded] = useState(false);
+  const [activeSkillId, setActiveSkillId] = useDraftField("chat-draft", emptyChatDraft, "skillId");
 
   useEffect(() => saveModelEndpoints(endpoints), [endpoints]);
+  useEffect(() => { if (draftState.ready && persistenceAvailable && !conversations.some(c => c.id === activeConversationId)) setActiveConversationId(conversations[0]?.id ?? initialConversation.id); }, [draftState.ready, persistenceAvailable, conversations]);
 
   useEffect(() => {
     let active = true;
@@ -457,7 +465,7 @@ export default function ModelWorkspace() {
         if (!active) return;
         if (stored.length) {
           setConversations(stored);
-          setActiveConversationId(stored[0].id);
+
         }
         setPersistenceAvailable(true);
       })
@@ -471,17 +479,31 @@ export default function ModelWorkspace() {
 
   useEffect(() => {
     let active = true;
-    invoke<PromptSkill[]>("list_skills")
+    let revision = 0;
+    const refreshSkills = () => {
+      const request = ++revision;
+      void invoke<PromptSkill[]>("list_skills")
       .then((records) => {
-        if (active) setSkills(records.filter((skill) => skill.enabled && !skill.hasScripts));
+        if (!active || request !== revision) return;
+        const enabled = records.filter((skill) => skill.enabled && !skill.hasScripts);
+        setSkills(enabled);
+        setSkillsLoaded(true);
       })
       .catch(() => {
-        if (active) setSkills([]);
+        if (active && request === revision) { setSkills([]); setSkillsLoaded(true); }
       });
+    };
+    refreshSkills();
+    window.addEventListener("icwb-skills-changed", refreshSkills);
     return () => {
       active = false;
+      window.removeEventListener("icwb-skills-changed", refreshSkills);
     };
   }, []);
+
+  useEffect(() => {
+    if (draftState.ready && skillsLoaded && activeSkillId && !skills.some(skill => skill.id === activeSkillId)) setActiveSkillId("");
+  }, [draftState.ready, skillsLoaded, skills, activeSkillId]);
 
   useEffect(() => {
     let active = true;
@@ -802,6 +824,7 @@ export default function ModelWorkspace() {
         </div>
 
         <form className="composer" onSubmit={submitMessage}>
+          <DraftStatus state={draftState} retry={retryDraft} />
           {requestError ? <p className="composer-error">{requestError}</p> : null}
           {pendingAttachments.length ? (
             <div className="pending-attachments" aria-label="待发送图片">
@@ -833,7 +856,7 @@ export default function ModelWorkspace() {
               ))}
             </div>
           ) : null}
-          <textarea aria-label="对话内容" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="输入问题…" rows={3} disabled={sending} maxLength={32000} />
+          <textarea aria-label="对话内容" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="输入问题…" rows={3} disabled={sending || !draftState.ready} maxLength={32000} />
           <div className="composer-footer">
             <label className="attachment-button">
               ＋ 图片
@@ -864,7 +887,7 @@ export default function ModelWorkspace() {
         </form>
       </div>
 
-      {managerOpen ? <EndpointManager endpoints={endpoints} onChange={setEndpoints} /> : null}
+      {managerOpen ? <EndpointManager endpoints={endpoints} onChange={setEndpoints} onClose={() => setManagerOpen(false)} /> : null}
     </section>
   );
 }

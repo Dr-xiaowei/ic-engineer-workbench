@@ -19,7 +19,6 @@ use std::{
 };
 use tokio::{net::TcpStream, time::timeout};
 
-const MAIL_CREDENTIAL_SERVICE: &str = "com.icengineer.workbench.mail";
 const DEMO_MAIL_ID: &str = "mail-embedded-demo";
 const MAX_ACCOUNTS: usize = 20;
 const MAX_SYNC_MESSAGES: usize = 100;
@@ -106,6 +105,47 @@ fn validated_addresses(host: &str, port: u16) -> Result<Vec<SocketAddr>, String>
     Ok(addresses)
 }
 
+// Connect to the already verified IP, while validating TLS against the original
+// hostname. Passing the hostname to lettre would perform a second DNS lookup.
+fn smtp_transport(
+    host: &str,
+    port: u16,
+    username: String,
+    password: String,
+    duration: Duration,
+) -> Result<lettre::SmtpTransport, String> {
+    let parameters = lettre::transport::smtp::client::TlsParameters::new(
+        host.trim_matches(['[', ']']).to_string(),
+    )
+    .map_err(|_| "无法初始化 SMTP TLS。".to_string())?;
+    smtp_transport_with_parameters(host, port, username, password, duration, parameters)
+}
+
+fn smtp_transport_with_parameters(
+    host: &str,
+    port: u16,
+    username: String,
+    password: String,
+    duration: Duration,
+    parameters: lettre::transport::smtp::client::TlsParameters,
+) -> Result<lettre::SmtpTransport, String> {
+    use lettre::transport::smtp::{authentication::Credentials, client::Tls};
+    let address = validated_addresses(host, port)?[0];
+    let tls = if port == 465 {
+        Tls::Wrapper(parameters)
+    } else {
+        Tls::Required(parameters)
+    };
+    Ok(
+        lettre::SmtpTransport::builder_dangerous(address.ip().to_string())
+            .port(address.port())
+            .tls(tls)
+            .timeout(Some(duration))
+            .credentials(Credentials::new(username, password))
+            .build(),
+    )
+}
+
 fn normalize_input(input: MailAccountInput) -> Result<MailAccountInput, String> {
     let address = input.address.trim().to_string();
     if address.len() > 254 || address.parse::<lettre::Address>().is_err() {
@@ -149,14 +189,17 @@ fn generated_id(input: &MailAccountInput) -> String {
     )
 }
 
-fn credential_entry(account_id: &str) -> Result<Entry, String> {
+fn credential_entry(app: &tauri::AppHandle, account_id: &str) -> Result<Entry, String> {
     validate_account_id(account_id)?;
-    Entry::new(MAIL_CREDENTIAL_SERVICE, account_id)
-        .map_err(|_| "无法访问系统邮箱凭据库。".to_string())
+    Entry::new(
+        &crate::credential_service(&app.config().identifier, "mail"),
+        account_id,
+    )
+    .map_err(|_| "无法访问系统邮箱凭据库。".to_string())
 }
 
-fn read_secrets(account_id: &str) -> Result<Option<MailSecrets>, String> {
-    match credential_entry(account_id)?.get_password() {
+fn read_secrets(app: &tauri::AppHandle, account_id: &str) -> Result<Option<MailSecrets>, String> {
+    match credential_entry(app, account_id)?.get_password() {
         Ok(value) => serde_json::from_str(&value)
             .map(Some)
             .map_err(|_| "系统邮箱凭据格式无效。".to_string()),
@@ -260,10 +303,18 @@ async fn connect_tcp(host: &str, port: u16) -> Result<TcpStream, String> {
 }
 
 async fn open_imap_session(account: &MailAccount, password: &str) -> Result<ImapSession, String> {
-    let tcp = connect_tcp(&account.imap_host, account.imap_port).await?;
     let connector = native_tls::TlsConnector::builder()
         .build()
         .map_err(|_| "无法初始化系统 TLS。".to_string())?;
+    open_imap_session_with_connector(account, password, connector).await
+}
+
+async fn open_imap_session_with_connector(
+    account: &MailAccount,
+    password: &str,
+    connector: native_tls::TlsConnector,
+) -> Result<ImapSession, String> {
+    let tcp = connect_tcp(&account.imap_host, account.imap_port).await?;
     let tls = timeout(
         Duration::from_secs(8),
         tokio_native_tls::TlsConnector::from(connector)
@@ -313,36 +364,30 @@ pub async fn test_mail_account(
         });
     }
     let account = load_account(&open_database(&app)?, &account_id)?;
-    let secrets = read_secrets(&account_id)?
+    let secrets = read_secrets(&app, &account_id)?
         .ok_or_else(|| "请先把 IMAP/SMTP 密码保存到系统凭据库。".to_string())?;
 
     let mut session = open_imap_session(&account, &secrets.imap_password).await?;
-    timeout(Duration::from_secs(8), session.select("INBOX"))
+    timeout(Duration::from_secs(8), session.examine("INBOX"))
         .await
         .map_err(|_| "IMAP 收件箱检查超时。".to_string())?
         .map_err(|_| "IMAP 收件箱不可用。".to_string())?;
     let _ = session.logout().await;
 
-    validated_addresses(&account.smtp_host, account.smtp_port)?;
     let smtp_host = account.smtp_host.clone();
     let smtp_port = account.smtp_port;
     let smtp_username = account.username.clone();
     let smtp_password = secrets.smtp_password;
     let smtp_ok = tauri::async_runtime::spawn_blocking(move || {
-        use lettre::{transport::smtp::authentication::Credentials, SmtpTransport};
-        let builder = if smtp_port == 465 {
-            SmtpTransport::relay(&smtp_host)
-        } else {
-            SmtpTransport::starttls_relay(&smtp_host)
-        }
-        .map_err(|_| "无法初始化 SMTP TLS。".to_string())?;
-        builder
-            .port(smtp_port)
-            .timeout(Some(Duration::from_secs(8)))
-            .credentials(Credentials::new(smtp_username, smtp_password))
-            .build()
-            .test_connection()
-            .map_err(|_| "SMTP 连接、TLS 或认证预检失败。".to_string())
+        smtp_transport(
+            &smtp_host,
+            smtp_port,
+            smtp_username,
+            smtp_password,
+            Duration::from_secs(8),
+        )?
+        .test_connection()
+        .map_err(|_| "SMTP 连接、TLS 或认证预检失败。".to_string())
     })
     .await
     .map_err(|_| "SMTP 检测任务失败。".to_string())??;
@@ -550,21 +595,35 @@ pub async fn list_mail_folders(
         return Ok(vec!["INBOX".to_string(), "Sent".to_string()]);
     }
     let account = load_account(&open_database(&app)?, &account_id)?;
-    let secrets = read_secrets(&account_id)?.ok_or_else(|| "邮箱凭据尚未保存。".to_string())?;
+    let secrets =
+        read_secrets(&app, &account_id)?.ok_or_else(|| "邮箱凭据尚未保存。".to_string())?;
     let mut session = open_imap_session(&account, &secrets.imap_password).await?;
-    let folders = session
-        .list(None, Some("*"))
-        .await
-        .map_err(|_| "无法列出 IMAP 文件夹。".to_string())?
-        .try_collect::<Vec<_>>()
-        .await
-        .map_err(|_| "无法读取 IMAP 文件夹。".to_string())?
-        .into_iter()
-        .map(|item| item.name().to_string())
-        .take(100)
-        .collect();
-    let _ = session.logout().await;
-    Ok(folders)
+    let result = read_folder_names(&mut session).await;
+    let _ = timeout(Duration::from_secs(2), session.logout()).await;
+    result
+}
+
+async fn read_folder_names(session: &mut ImapSession) -> Result<Vec<String>, String> {
+    timeout(Duration::from_secs(15), async {
+        let mut entries = session
+            .list(None, Some("*"))
+            .await
+            .map_err(|_| "无法列出 IMAP 文件夹。".to_string())?;
+        let mut names = Vec::new();
+        while let Some(entry) = entries
+            .try_next()
+            .await
+            .map_err(|_| "无法读取 IMAP 文件夹。".to_string())?
+        {
+            names.push(entry.name().to_string());
+            if names.len() >= 100 {
+                break;
+            }
+        }
+        Ok(names)
+    })
+    .await
+    .map_err(|_| "IMAP 文件夹列表请求超时。".to_string())?
 }
 
 #[tauri::command]
@@ -584,55 +643,69 @@ pub async fn sync_mail_folder(
         return local_messages(&open_database(&app)?, &account_id, &folder, None);
     }
     let account = load_account(&open_database(&app)?, &account_id)?;
-    let secrets = read_secrets(&account_id)?.ok_or_else(|| "邮箱凭据尚未保存。".to_string())?;
+    let secrets =
+        read_secrets(&app, &account_id)?.ok_or_else(|| "邮箱凭据尚未保存。".to_string())?;
     let mut session = open_imap_session(&account, &secrets.imap_password).await?;
-    session
-        .examine(&folder)
-        .await
-        .map_err(|_| "无法只读打开 IMAP 文件夹。".to_string())?;
-    let mut uids = session
-        .uid_search("ALL")
-        .await
-        .map_err(|_| "无法搜索 IMAP 邮件 UID。".to_string())?
-        .into_iter()
-        .collect::<Vec<_>>();
-    uids.sort_unstable();
-    let uid_set = uids
-        .into_iter()
-        .rev()
-        .take(MAX_SYNC_MESSAGES)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .map(|uid| uid.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    if uid_set.is_empty() {
-        let _ = session.logout().await;
-        return Ok(Vec::new());
-    }
-    let fetches = session
-        .uid_fetch(uid_set, "(UID FLAGS RFC822.SIZE BODY.PEEK[])")
-        .await
-        .map_err(|_| "无法请求 IMAP 邮件。".to_string())?
-        .try_collect::<Vec<_>>()
-        .await
-        .map_err(|_| "IMAP 邮件接收中断。".to_string())?;
-    let mut parsed = Vec::new();
-    for fetch in fetches {
-        let Some(uid) = fetch.uid else { continue };
-        let Some(raw) = fetch.body() else { continue };
-        let unread = !fetch
-            .flags()
-            .any(|flag| matches!(flag, async_imap::types::Flag::Seen));
-        if let Ok(mail) = parse_mail(&account_id, &folder, uid, unread, raw) {
-            parsed.push(mail);
-        }
-    }
-    let _ = session.logout().await;
+    let result = read_folder_messages(&mut session, &account_id, &folder).await;
+    let _ = timeout(Duration::from_secs(2), session.logout()).await;
+    let parsed = result?;
     save_synced(&mut open_database(&app)?, &parsed)?;
     record_audit(&app, "mail.folder-sync", "success");
     Ok(parsed.into_iter().map(|mail| mail.record).collect())
+}
+
+async fn read_folder_messages(
+    session: &mut ImapSession,
+    account_id: &str,
+    folder: &str,
+) -> Result<Vec<ParsedMail>, String> {
+    timeout(Duration::from_secs(30), async {
+        session
+            .examine(&folder)
+            .await
+            .map_err(|_| "无法只读打开 IMAP 文件夹。".to_string())?;
+        let mut uids = session
+            .uid_search("ALL")
+            .await
+            .map_err(|_| "无法搜索 IMAP 邮件 UID。".to_string())?
+            .into_iter()
+            .collect::<Vec<_>>();
+        uids.sort_unstable();
+        let uid_set = uids
+            .into_iter()
+            .rev()
+            .take(MAX_SYNC_MESSAGES)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|uid| uid.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        if uid_set.is_empty() {
+            return Ok(Vec::new());
+        }
+        let fetches = session
+            .uid_fetch(uid_set, "(UID FLAGS RFC822.SIZE BODY.PEEK[])")
+            .await
+            .map_err(|_| "无法请求 IMAP 邮件。".to_string())?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|_| "IMAP 邮件接收中断。".to_string())?;
+        let mut parsed = Vec::new();
+        for fetch in fetches {
+            let Some(uid) = fetch.uid else { continue };
+            let Some(raw) = fetch.body() else { continue };
+            let unread = !fetch
+                .flags()
+                .any(|flag| matches!(flag, async_imap::types::Flag::Seen));
+            if let Ok(mail) = parse_mail(&account_id, &folder, uid, unread, raw) {
+                parsed.push(mail);
+            }
+        }
+        Ok(parsed)
+    })
+    .await
+    .map_err(|_| "IMAP 邮件同步超时。".to_string())?
 }
 
 fn load_attachment_summaries(
@@ -666,7 +739,7 @@ fn local_messages(
         if value.trim().is_empty() || value.len() > 500 {
             return Err("邮件搜索词无效。".to_string());
         }
-        ("SELECT m.account_id,m.folder,m.uid,m.message_id,m.subject,m.sender,m.recipients,m.sent_at,m.preview,m.body_text,m.unread FROM mail_search s JOIN mail_messages m ON m.account_id=s.account_id AND m.folder=s.folder AND m.uid=s.uid WHERE mail_search MATCH ?3 AND s.account_id=?1 AND s.folder=?2 ORDER BY m.sent_at DESC LIMIT 100", format!("\"{}\"", value.replace('"', "\"\"")))
+        ("SELECT m.account_id,m.folder,m.uid,m.message_id,m.subject,m.sender,m.recipients,m.sent_at,m.preview,m.body_text,m.unread FROM mail_messages m WHERE m.account_id=?1 AND m.folder=?2 AND (m.uid IN (SELECT uid FROM mail_search WHERE mail_search MATCH ?3 AND account_id=?1 AND folder=?2) OR instr(lower(m.subject),lower(?4))>0 OR instr(lower(m.body_text),lower(?4))>0 OR instr(lower(m.sender),lower(?4))>0 OR instr(lower(m.recipients),lower(?4))>0) ORDER BY m.sent_at DESC,m.uid DESC LIMIT 100", format!("\"{}\"", value.replace('"', "\"\"")))
     } else {
         ("SELECT account_id,folder,uid,message_id,subject,sender,recipients,sent_at,preview,body_text,unread FROM mail_messages WHERE account_id=?1 AND folder=?2 ORDER BY sent_at DESC,uid DESC LIMIT 100", String::new())
     };
@@ -690,7 +763,15 @@ fn local_messages(
         })
     };
     let mut records = if query_text.is_some() {
-        statement.query_map(params![account_id, folder, query_value], map)
+        statement.query_map(
+            params![
+                account_id,
+                folder,
+                query_value,
+                query_text.unwrap_or("").trim()
+            ],
+            map,
+        )
     } else {
         statement.query_map(params![account_id, folder], map)
     }
@@ -727,6 +808,7 @@ pub fn search_local_mail(
 }
 
 fn safe_export_destination(path: &str) -> Result<std::path::PathBuf, String> {
+    crate::file_safety::validate_path(path)?;
     let destination = Path::new(path);
     let parent = destination
         .parent()
@@ -740,9 +822,9 @@ fn safe_export_destination(path: &str) -> Result<std::path::PathBuf, String> {
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "附件导出文件名无效。".to_string())?;
     let result = canonical_parent.join(file_name);
-    if result.exists()
+    if fs::symlink_metadata(&result).is_ok()
         && fs::symlink_metadata(&result)
-            .map(|metadata| metadata.file_type().is_symlink() || !metadata.is_file())
+            .map(|metadata| crate::file_safety::is_link(&metadata) || !metadata.is_file())
             .unwrap_or(true)
     {
         return Err("附件导出目标不是普通文件或指向符号链接。".to_string());
@@ -900,10 +982,11 @@ fn build_outgoing_message(
     let mut multipart = MultiPart::mixed().singlepart(SinglePart::plain(draft.body.clone()));
     let mut total_bytes = draft.body.len();
     for selected in &draft.attachment_paths {
+        crate::file_safety::validate_path(selected)?;
         let requested = Path::new(selected);
         let metadata =
             fs::symlink_metadata(requested).map_err(|_| "无法读取待发送附件。".to_string())?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
+        if crate::file_safety::is_link(&metadata) || !metadata.is_file() {
             return Err("待发送附件必须是普通文件且不能是符号链接。".to_string());
         }
         let canonical = requested
@@ -937,13 +1020,18 @@ fn build_outgoing_message(
         .map_err(|_| "无法构建待发送邮件。".to_string())
 }
 
+#[derive(Serialize)]
+pub struct MailSendResult {
+    simulated: bool,
+}
+
 #[tauri::command]
 pub async fn send_mail(
     app: tauri::AppHandle,
     account_id: String,
     draft: MailDraft,
     confirmed: bool,
-) -> Result<(), String> {
+) -> Result<MailSendResult, String> {
     if !confirmed {
         record_audit(&app, "mail.send", "blocked");
         return Err("发送邮件前必须完成人工二次确认。".to_string());
@@ -957,30 +1045,26 @@ pub async fn send_mail(
     if is_demo_mode() && account_id == DEMO_MAIL_ID {
         build_outgoing_message(&account, &draft)?;
         record_audit(&app, "mail.send", "success");
-        return Ok(());
+        return Ok(MailSendResult { simulated: true });
     }
-    validated_addresses(&account.smtp_host, account.smtp_port)?;
-    let secrets = read_secrets(&account_id)?.ok_or_else(|| "邮箱凭据尚未保存。".to_string())?;
+    let secrets =
+        read_secrets(&app, &account_id)?.ok_or_else(|| "邮箱凭据尚未保存。".to_string())?;
     let message = build_outgoing_message(&account, &draft)?;
     let smtp_host = account.smtp_host;
     let smtp_port = account.smtp_port;
     let username = account.username;
     let result = tauri::async_runtime::spawn_blocking(move || {
-        use lettre::{transport::smtp::authentication::Credentials, SmtpTransport, Transport};
-        let builder = if smtp_port == 465 {
-            SmtpTransport::relay(&smtp_host)
-        } else {
-            SmtpTransport::starttls_relay(&smtp_host)
-        }
-        .map_err(|_| "无法初始化 SMTP TLS。".to_string())?;
-        builder
-            .port(smtp_port)
-            .timeout(Some(Duration::from_secs(15)))
-            .credentials(Credentials::new(username, secrets.smtp_password))
-            .build()
-            .send(&message)
-            .map(|_| ())
-            .map_err(|_| "SMTP 发送失败；邮件未标记为已发送。".to_string())
+        use lettre::Transport;
+        smtp_transport(
+            &smtp_host,
+            smtp_port,
+            username,
+            secrets.smtp_password,
+            Duration::from_secs(15),
+        )?
+        .send(&message)
+        .map(|_| ())
+        .map_err(|_| "SMTP 发送失败；邮件未标记为已发送。".to_string())
     })
     .await
     .map_err(|_| "SMTP 发送任务失败。".to_string())?;
@@ -989,7 +1073,7 @@ pub async fn send_mail(
         "mail.send",
         if result.is_ok() { "success" } else { "failed" },
     );
-    result
+    result.map(|_| MailSendResult { simulated: false })
 }
 
 #[tauri::command]
@@ -1027,7 +1111,7 @@ pub fn save_mail_secrets(
             smtp_password,
         })
         .map_err(|_| "无法编码邮箱凭据。".to_string())?;
-        credential_entry(&account_id)?
+        credential_entry(&app, &account_id)?
             .set_password(&value)
             .map_err(|_| "无法写入系统邮箱凭据库。".to_string())
     })();
@@ -1040,11 +1124,11 @@ pub fn save_mail_secrets(
 }
 
 #[tauri::command]
-pub fn has_mail_secrets(account_id: String) -> Result<bool, String> {
+pub fn has_mail_secrets(app: tauri::AppHandle, account_id: String) -> Result<bool, String> {
     if is_demo_mode() && account_id == DEMO_MAIL_ID {
         return Ok(true);
     }
-    Ok(read_secrets(&account_id)?.is_some())
+    Ok(read_secrets(&app, &account_id)?.is_some())
 }
 
 #[tauri::command]
@@ -1088,7 +1172,7 @@ pub fn delete_mail_account(app: tauri::AppHandle, account_id: String) -> Result<
             connection.execute("DELETE FROM mail_accounts WHERE id=?1", params![account_id])
         })
         .map_err(|_| "无法移除邮箱账户记录。".to_string())?;
-    let result = match credential_entry(&account_id)?.delete_credential() {
+    let result = match credential_entry(&app, &account_id)?.delete_credential() {
         Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
         Err(_) => Err("账户记录已移除，但系统凭据清理失败。".to_string()),
     };
@@ -1103,6 +1187,20 @@ pub fn delete_mail_account(app: tauri::AppHandle, account_id: String) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn attachment_export_rejects_dangling_symlinks() {
+        let root = std::env::temp_dir().join(format!("icwb-mail-link-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let missing = root.join("missing.txt");
+        let link = root.join("export.txt");
+        std::os::unix::fs::symlink(&missing, &link).unwrap();
+        assert!(safe_export_destination(link.to_str().unwrap()).is_err());
+        assert!(!missing.exists());
+        fs::remove_file(link).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
     use std::net::IpAddr;
 
     #[test]
@@ -1127,6 +1225,63 @@ mod tests {
         assert!(validated_addresses("127.0.0.1", 993).is_ok());
         assert!(validated_addresses("8.8.8.8", 993).is_err());
         assert!("127.0.0.1".parse::<IpAddr>().is_ok());
+    }
+
+    #[test]
+    fn smtp_refuses_plaintext_authentication_when_starttls_is_missing() {
+        use std::{
+            io::{BufRead, BufReader, Write},
+            net::TcpListener,
+            thread,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            stream
+                .write_all(b"220 localhost synthetic acceptance\r\n")
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut commands = String::new();
+            reader.read_line(&mut commands).unwrap();
+            stream
+                .write_all(b"250-localhost\r\n250 AUTH PLAIN LOGIN\r\n")
+                .unwrap();
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                commands.push_str(&line);
+                if line.starts_with("QUIT") {
+                    let _ = stream.write_all(b"221 bye\r\n");
+                    break;
+                }
+                line.clear();
+            }
+            commands
+        });
+        let transport = smtp_transport(
+            "127.0.0.1",
+            port,
+            "synthetic-user".into(),
+            "synthetic-password".into(),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        assert!(transport.test_connection().is_err());
+        let commands = server.join().unwrap();
+        assert!(commands.starts_with("EHLO "));
+        assert!(!commands.contains("AUTH "));
+        assert!(!commands.contains("MAIL FROM"));
+        assert!(smtp_transport(
+            "8.8.8.8",
+            port,
+            "".into(),
+            "".into(),
+            Duration::from_secs(1)
+        )
+        .is_err());
     }
 
     #[test]
@@ -1166,4 +1321,38 @@ mod tests {
         assert!(parse_recipients(&[]).is_err());
         assert!(parse_recipients(&["not an address".into()]).is_err());
     }
+
+    #[test]
+    fn chinese_and_part_number_mail_search_remains_scoped() {
+        let mut db = Connection::open_in_memory().unwrap();
+        crate::storage::initialize(&db).unwrap();
+        db.execute("INSERT INTO mail_accounts(id,address,display_name,username,imap_host,imap_port,smtp_host,smtp_port) VALUES('mail-search','test@example.invalid','synthetic','test','127.0.0.1',993,'127.0.0.1',465)",[]).unwrap();
+        let raw = "From: test@example.invalid\r\nTo: recipient@example.invalid\r\nSubject: 偏置复核\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nZXW-100，启动条件待复核。";
+        save_synced(
+            &mut db,
+            &[parse_mail("mail-search", "INBOX", 1, true, raw.as_bytes()).unwrap()],
+        )
+        .unwrap();
+        for query in ["偏置", "启动", "zxw-100", "XW-10"] {
+            assert_eq!(
+                local_messages(&db, "mail-search", "INBOX", Some(query))
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert!(local_messages(&db, "mail-other", "INBOX", Some(query))
+                .unwrap()
+                .is_empty());
+            assert!(local_messages(&db, "mail-search", "Sent", Some(query))
+                .unwrap()
+                .is_empty());
+        }
+        assert!(local_messages(&db, "mail-search", "INBOX", Some("%_'\""))
+            .unwrap()
+            .is_empty());
+    }
 }
+
+#[cfg(test)]
+#[path = "mail_acceptance_tests.rs"]
+mod acceptance_tests;

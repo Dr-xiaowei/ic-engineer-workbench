@@ -1,0 +1,58 @@
+[hidden] { display: none !important; }
+.module-tabs { display:flex; gap:8px; margin:0 0 20px; flex-wrap:wrap; border-bottom:1px solid var(--line); padding:0 0 12px; }
+.module-tabs button,.saved-searches button,.template-actions button,.pdf-quote-bar button { padding:8px 12px; border:1px solid var(--line); border-radius:8px; background:var(--surface); color:var(--muted); }
+.module-tabs button.active,.template-picker button.active { color:var(--text); border-color:var(--accent); background:var(--button-hover); }
+.pinned-navigation { margin-top:26px; }
+.pinned-navigation button { font-size:13px; }
+.draft-status { display:flex; align-items:center; flex-wrap:wrap; gap:8px; color:var(--muted); font-size:12px; margin:8px 0 14px; min-height:20px; }
+.draft-error { color:#cc7652; }
+.today-work { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin:24px 0; }
+.today-work article { border:1px solid var(--line); background:var(--surface); border-radius:14px; padding:22px; }
+.today-work h2 { font-size:18px; margin:0 0 14px; }
+.today-work button { display:flex; flex-direction:column; gap:5px; text-align:left; padding:12px; width:100%; border:0; border-bottom:1px solid var(--line); background:transparent; color:var(--text); }
+.today-work small { color:var(--muted); line-height:1.5; }
+.runtime-details,.advanced-options { border:1px solid var(--line); border-radius:10px; padding:14px; margin:18px 0; }
+.runtime-details summary,.advanced-options summary { cursor:pointer; font-size:14px; }
+.template-picker { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:18px 0; }
+.template-picker button { padding:16px; display:flex; flex-direction:column; gap:8px; text-align:left; background:var(--surface); color:var(--text); border:1px solid var(--line); border-radius:10px; }
+.template-picker small { color:var(--muted); line-height:1.5; }
+.template-layout { display:grid; grid-template-columns:minmax(240px,1fr) minmax(280px,1.2fr); gap:24px; }
+.template-layout form,.template-preview,.template-custom-editor { background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:20px; min-width:0; }
+.template-layout label,.template-custom-editor label,.datasheet-source label,.task-proposal label,.note-project { display:flex; flex-direction:column; gap:8px; margin:12px 0; font-size:13px; color:var(--muted); }
+.template-layout textarea,.template-custom-editor textarea,.template-custom-editor input,.template-custom-editor select,.datasheet-source textarea,.datasheet-source input,.datasheet-source select,.task-proposal input,.note-project select { width:100%; box-sizing:border-box; padding:10px; border:1px solid var(--line); border-radius:7px; background:var(--bg); color:var(--text); font:inherit; line-height:1.6; }
+.template-preview { overflow:auto; max-height:850px; }
+.template-actions,.review-task-actions,.saved-searches { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:14px 0; }
+.review-task-actions small { font-size:12px; color:var(--muted); }
+.template-import { cursor:pointer; padding:8px; }
+.template-import input { max-width:190px; }
+.template-custom-editor { margin:16px 0; }
+.source-search-results { display:flex; flex-direction:column; gap:5px; max-height:260px; overflow:auto; }
+.source-search-results button { background:var(--surface); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:8px; text-align:left; line-height:1.5; font-size:12px; }
+.source-text-view pre { white-space:pre-wrap; overflow-wrap:anywhere; font:14px/1.8 ui-monospace,monospace; user-select:text; padding:16px; max-height:800px; overflow:auto; }
+.evidence-list { border-top:1px solid var(--line); margin-top:18px; padding:12px 0; }
+.evidence-list header { display:flex; gap:12px; justify-content:space-between; align-items:center; flex-wrap:wrap; }
+.evidence-list h3 { font-size:15px; }
+.evidence-list article { border:1px solid var(--line); border-radius:9px; padding:12px; margin:10px 0; }
+.evidence-list blockquote { margin:10px 0; white-space:pre-wrap; font-size:13px; line-height:1.7; border-left:3px solid var(--accent); padding-left:12px; max-height:230px; overflow:auto; }
+.evidence-list small { margin-left:12px; color:var(--muted); }
+.task-proposal { padding:15px; margin:12px 0; background:var(--surface); border:1px solid var(--line); border-radius:10px; }
+.pdf-toolbar input { width:58px; background:var(--surface); color:var(--text); padding:5px; border:1px solid var(--line); border-radius:4px; }
+.pdf-quote-bar { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px; font-size:12px; }
+.pdf-page-surface { position:relative; flex-shrink:0; background:white; margin:0 auto; }
+.pdf-page-surface canvas { display:block; width:100%; height:100%; }
+.pdf-text-layer { position:absolute; inset:0; overflow:clip; line-height:1; text-align:initial; letter-spacing:normal; word-spacing:normal; text-size-adjust:none; forced-color-adjust:none; transform-origin:0 0; --min-font-size:1; --text-scale-factor:calc(var(--total-scale-factor) * var(--min-font-size)); --min-font-size-inv:calc(1 / var(--min-font-size)); }
+.pdf-text-layer :is(span,br) { color:transparent; position:absolute; white-space:pre; cursor:text; transform-origin:0 0; user-select:text; -webkit-user-select:text; }
+.pdf-text-layer > :not(.markedContent),.pdf-text-layer .markedContent span:not(.markedContent) { z-index:1; --font-height:0; font-size:calc(var(--text-scale-factor) * var(--font-height)); --scale-x:1; --rotate:0deg; transform:rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv)); }
+.pdf-text-layer .markedContent { display:contents; }
+.pdf-text-layer ::selection { background:rgba(50,120,240,.35); }
+@media(max-width:1120px) { .template-picker{grid-template-columns:repeat(2,minmax(0,1fr));} .template-layout{grid-template-columns:1fr;} .today-work{gap:12px;} }
+.note-editor { display:flex; flex-direction:column; gap:10px; }
+.note-project { margin:0; }
+.note-list > select { width:100%; padding:8px; margin-bottom:8px; background:var(--surface); color:var(--text); border:1px solid var(--line); border-radius:6px; }
+.today-task-row { display:flex; align-items:center; gap:4px; }
+.today-task-row > button:last-child { width:auto; white-space:nowrap; color:var(--accent); }
+.pdf-page-surface canvas { height:100%; }
+.module-tabs button { width:auto; flex:0 0 auto; }
+.module-tabs { overflow:visible; }
+.datasheet-workspace > .draft-status { padding:0 20px; }
+/* Text selection geometry follows the bundled PDF.js TextLayer API (Apache-2.0). */

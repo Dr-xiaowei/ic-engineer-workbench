@@ -1,10 +1,13 @@
 mod attachments;
 mod demo;
 mod document;
+mod file_safety;
 mod mail;
 mod notes;
 mod pdf_export;
 mod planner;
+mod presentation;
+mod productivity;
 mod projects;
 mod skills;
 mod software;
@@ -23,7 +26,11 @@ use std::{
 use tauri::Emitter;
 use url::Url;
 
-const CREDENTIAL_SERVICE: &str = "com.icengineer.workbench.model-api";
+// Keep the released app's service name stable; previews and Demo must never
+// read or remove credentials belonging to another application identifier.
+fn credential_service(app_id: &str, kind: &str) -> String {
+    format!("{app_id}.{kind}")
+}
 const DEMO_MODEL_BASE_URL: &str = "http://127.0.0.1:18080/v1";
 const MAX_ENDPOINT_ID_LENGTH: usize = 80;
 const MAX_MESSAGE_LENGTH: usize = 32_000;
@@ -32,7 +39,7 @@ const MAX_MESSAGES: usize = 80;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeStatus {
-    app_version: &'static str,
+    app_version: String,
     demo_mode: bool,
     network_mode: &'static str,
     data_location: &'static str,
@@ -47,9 +54,13 @@ fn is_embedded_demo_endpoint(base_url: &str) -> bool {
 }
 
 #[tauri::command]
-fn get_runtime_status() -> RuntimeStatus {
+fn get_runtime_status(app: tauri::AppHandle) -> RuntimeStatus {
+    runtime_status(app.package_info().version.to_string())
+}
+
+fn runtime_status(version: String) -> RuntimeStatus {
     RuntimeStatus {
-        app_version: env!("CARGO_PKG_VERSION"),
+        app_version: version,
         demo_mode: is_demo_mode(),
         network_mode: "offline",
         data_location: "local",
@@ -141,13 +152,17 @@ fn validate_endpoint_id(endpoint_id: &str) -> Result<(), String> {
         .ok_or_else(|| "端点标识无效。".to_string())
 }
 
-fn credential_entry(endpoint_id: &str) -> Result<Entry, String> {
+fn credential_entry(app: &tauri::AppHandle, endpoint_id: &str) -> Result<Entry, String> {
     validate_endpoint_id(endpoint_id)?;
-    Entry::new(CREDENTIAL_SERVICE, endpoint_id).map_err(|_| "无法访问系统凭据库。".to_string())
+    Entry::new(
+        &credential_service(&app.config().identifier, "model-api"),
+        endpoint_id,
+    )
+    .map_err(|_| "无法访问系统凭据库。".to_string())
 }
 
-fn read_model_secret(endpoint_id: &str) -> Result<Option<String>, String> {
-    match credential_entry(endpoint_id)?.get_password() {
+fn read_model_secret(app: &tauri::AppHandle, endpoint_id: &str) -> Result<Option<String>, String> {
+    match credential_entry(app, endpoint_id)?.get_password() {
         Ok(secret) => Ok(Some(secret)),
         Err(KeyringError::NoEntry) => Ok(None),
         Err(_) => Err("无法读取系统凭据库。".to_string()),
@@ -155,8 +170,8 @@ fn read_model_secret(endpoint_id: &str) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-fn has_model_secret(endpoint_id: String) -> Result<bool, String> {
-    Ok(read_model_secret(&endpoint_id)?.is_some())
+fn has_model_secret(app: tauri::AppHandle, endpoint_id: String) -> Result<bool, String> {
+    Ok(read_model_secret(&app, &endpoint_id)?.is_some())
 }
 
 #[tauri::command]
@@ -169,7 +184,7 @@ fn save_model_secret(
         if secret.is_empty() || secret.len() > 16_384 {
             return Err("API 密钥不能为空且不能超过 16 KiB。".to_string());
         }
-        credential_entry(&endpoint_id)?
+        credential_entry(&app, &endpoint_id)?
             .set_password(&secret)
             .map_err(|_| "无法写入系统凭据库。".to_string())
     })();
@@ -183,7 +198,7 @@ fn save_model_secret(
 
 #[tauri::command]
 fn delete_model_secret(app: tauri::AppHandle, endpoint_id: String) -> Result<(), String> {
-    let result = match credential_entry(&endpoint_id)?.delete_credential() {
+    let result = match credential_entry(&app, &endpoint_id)?.delete_credential() {
         Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
         Err(_) => Err("无法从系统凭据库删除凭据。".to_string()),
     };
@@ -274,7 +289,7 @@ async fn test_model_connection(
             request_id: Some("embedded-demo".to_string()),
         })
     } else {
-        let secret = read_model_secret(&endpoint_id)?;
+        let secret = read_model_secret(&app, &endpoint_id)?;
         test_model_connection_inner(&base_url, secret.as_deref()).await
     };
     storage::record_audit(
@@ -544,7 +559,7 @@ async fn send_chat_completion(
     let result = if is_embedded_demo_endpoint(&base_url) {
         embedded_demo_completion(&model, &messages)
     } else {
-        let secret = read_model_secret(&endpoint_id)?;
+        let secret = read_model_secret(&app, &endpoint_id)?;
         send_chat_completion_inner(&base_url, &model, &messages, secret.as_deref()).await
     };
     storage::record_audit(
@@ -576,6 +591,14 @@ fn embedded_demo_completion(
     })
 }
 
+fn model_request_error(error: reqwest::Error, fallback: &str) -> String {
+    if error.is_timeout() {
+        "模型连接或生成超时（连接限 4 秒，整次请求限 120 秒）；请缩短输入、检查服务负载或在模型服务端调整生成参数后重试。".to_string()
+    } else {
+        fallback.to_string()
+    }
+}
+
 async fn send_chat_completion_inner(
     base_url: &str,
     model: &str,
@@ -585,12 +608,16 @@ async fn send_chat_completion_inner(
     validate_chat_request(&model, &messages)?;
     let api_messages = build_api_messages(messages);
     let (url, client) = endpoint_resource_url(&base_url, "chat/completions")?;
-    let mut request = client.post(url).json(&ChatCompletionRequest {
-        model: &model,
-        messages: &api_messages,
-        stream: false,
-        store: false,
-    });
+    let mut request =
+        client
+            .post(url)
+            .timeout(Duration::from_secs(120))
+            .json(&ChatCompletionRequest {
+                model: &model,
+                messages: &api_messages,
+                stream: false,
+                store: false,
+            });
     if let Some(secret) = secret {
         request = request.bearer_auth(secret);
     }
@@ -598,7 +625,7 @@ async fn send_chat_completion_inner(
     let mut response = request
         .send()
         .await
-        .map_err(|_| "模型请求失败，请检查连接与服务状态。".to_string())?;
+        .map_err(|error| model_request_error(error, "模型请求失败，请检查连接与服务状态。"))?;
     let status = response.status();
     let request_id = response
         .headers()
@@ -619,7 +646,7 @@ async fn send_chat_completion_inner(
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|_| "读取模型响应失败。".to_string())?
+        .map_err(|error| model_request_error(error, "读取模型响应失败。"))?
     {
         if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
             return Err("模型响应超过 4 MiB 限制。".to_string());
@@ -673,7 +700,7 @@ async fn send_chat_completion_stream(
             Ok(result)
         })
     } else {
-        let secret = read_model_secret(&endpoint_id)?;
+        let secret = read_model_secret(&app, &endpoint_id)?;
         send_chat_completion_stream_inner(
             &base_url,
             &model,
@@ -704,12 +731,16 @@ where
     validate_chat_request(model, messages)?;
     let api_messages = build_api_messages(messages);
     let (url, client) = endpoint_resource_url(base_url, "chat/completions")?;
-    let mut request = client.post(url).json(&ChatCompletionRequest {
-        model,
-        messages: &api_messages,
-        stream: true,
-        store: false,
-    });
+    let mut request =
+        client
+            .post(url)
+            .timeout(Duration::from_secs(120))
+            .json(&ChatCompletionRequest {
+                model,
+                messages: &api_messages,
+                stream: true,
+                store: false,
+            });
     if let Some(secret) = secret {
         request = request.bearer_auth(secret);
     }
@@ -717,7 +748,7 @@ where
     let mut response = request
         .send()
         .await
-        .map_err(|_| "模型请求失败，请检查连接与服务状态。".to_string())?;
+        .map_err(|error| model_request_error(error, "模型请求失败，请检查连接与服务状态。"))?;
     let status = response.status();
     let request_id = response
         .headers()
@@ -736,7 +767,7 @@ where
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|_| "读取模型流失败。".to_string())?
+        .map_err(|error| model_request_error(error, "读取模型流失败。"))?
     {
         received_bytes = received_bytes.saturating_add(chunk.len());
         if received_bytes > MAX_STREAM_BYTES {
@@ -811,6 +842,7 @@ pub fn run() {
             send_chat_completion,
             send_chat_completion_stream,
             document::convert_document,
+            document::export_converted_document,
             document::load_pdf_data_url,
             document::load_demo_datasheet,
             document::export_markdown,
@@ -852,6 +884,13 @@ pub fn run() {
             mail::export_mail_attachment,
             mail::preview_mail_attachment,
             mail::send_mail,
+            productivity::load_workspace_state,
+            productivity::save_workspace_state,
+            productivity::register_review_source,
+            productivity::register_project_review_source,
+            productivity::load_review_source,
+            productivity::validate_review_citation,
+            productivity::export_work_template,
             notes::get_notes_root,
             notes::set_notes_root,
             notes::list_notes,
@@ -880,6 +919,188 @@ mod tests {
         sync::mpsc::{self, Receiver},
         thread,
     };
+
+    #[test]
+    fn credentials_are_isolated_without_breaking_released_names() {
+        for kind in ["model-api", "mail"] {
+            let official = credential_service("com.icengineer.workbench", kind);
+            assert_eq!(official, format!("com.icengineer.workbench.{kind}"));
+            let demo = credential_service("com.icengineer.workbench.demo", kind);
+            let preview = credential_service("com.icengineer.workbench.productivitypreview", kind);
+            assert_ne!(official, demo);
+            assert_ne!(official, preview);
+            assert_ne!(demo, preview);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly started loopback model and synthetic fixture directory"]
+    fn real_local_model_text_stream_document_and_image() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let base_url = std::env::var("ICWB_QA_MODEL_URL").expect("explicit local model URL");
+        assert_eq!(Url::parse(&base_url).unwrap().host_str(), Some("127.0.0.1"));
+        let model = std::env::var("ICWB_QA_MODEL_NAME").expect("explicit model name");
+        let root = std::path::PathBuf::from(
+            std::env::var("ICWB_QA_FIXTURES").expect("synthetic fixtures"),
+        );
+        let mut evidence = Vec::new();
+        tauri::async_runtime::block_on(async {
+            assert!(
+                test_model_connection_inner(&base_url, None)
+                    .await
+                    .unwrap()
+                    .success
+            );
+            let messages = vec![ChatRequestMessage {
+                role: "user".into(),
+                content: "Reply with only LOCAL_OK.".into(),
+                attachments: vec![],
+            }];
+            let result = send_chat_completion_inner(&base_url, &model, &messages, None)
+                .await
+                .unwrap();
+            assert!(!result.content.trim().is_empty());
+            evidence.push(serde_json::json!({"case":"text","content":result.content}));
+            let mut deltas = Vec::new();
+            let result =
+                send_chat_completion_stream_inner(&base_url, &model, &messages, None, |delta| {
+                    deltas.push(delta.to_string());
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            assert!(!deltas.is_empty());
+            assert_eq!(result.content, deltas.concat());
+            evidence.push(
+                serde_json::json!({"case":"stream","chunks":deltas.len(),"content":result.content}),
+            );
+            let doc = document::convert_document(
+                root.join("documents/04-review.docx")
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+            .unwrap();
+            let messages = vec![ChatRequestMessage {
+                role: "user".into(),
+                content: format!(
+                    "仅提取下面合成资料的器件型号、电源、电流和条件，一句话回答。\n{}",
+                    doc.markdown
+                ),
+                attachments: vec![],
+            }];
+            let result = send_chat_completion_inner(&base_url, &model, &messages, None)
+                .await
+                .unwrap();
+            assert!(!result.content.trim().is_empty());
+            evidence.push(serde_json::json!({"case":"document","content":result.content}));
+            let bytes = std::fs::read(root.join("synthetic.png")).unwrap();
+            let image = ChatAttachment {
+                data_url: format!("data:image/png;base64,{}", STANDARD.encode(&bytes)),
+                id: "qa-image".into(),
+                name: "synthetic.png".into(),
+                mime_type: "image/png".into(),
+                size_bytes: bytes.len(),
+            };
+            let messages = vec![ChatRequestMessage {
+                role: "user".into(),
+                content: "What color is the large rectangle? One word only.".into(),
+                attachments: vec![image],
+            }];
+            let result = send_chat_completion_inner(&base_url, &model, &messages, None)
+                .await
+                .unwrap();
+            assert!(!result.content.trim().is_empty());
+            evidence.push(serde_json::json!({"case":"image","content":result.content}));
+        });
+        let output = root.parent().unwrap().join("real-model-adapter.json");
+        std::fs::write(output, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires ICWB_QA_CASES and an explicitly started loopback text model"]
+    fn real_local_model_workflow_requests() {
+        let base_url = std::env::var("ICWB_QA_MODEL_URL").expect("explicit loopback URL");
+        assert_eq!(Url::parse(&base_url).unwrap().host_str(), Some("127.0.0.1"));
+        let model = std::env::var("ICWB_QA_MODEL_NAME").expect("explicit model name");
+        let path =
+            std::path::PathBuf::from(std::env::var("ICWB_QA_CASES").expect("synthetic cases"));
+        #[derive(Deserialize)]
+        struct Case {
+            name: String,
+            messages: Vec<ChatRequestMessage>,
+        }
+        let cases: Vec<Case> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(!cases.is_empty());
+        let mut evidence = Vec::new();
+        tauri::async_runtime::block_on(async {
+            for case in cases {
+                let result = send_chat_completion_inner(&base_url, &model, &case.messages, None)
+                    .await
+                    .unwrap();
+                assert!(!result.content.trim().is_empty(), "{}", case.name);
+                evidence.push(
+                    serde_json::json!({"case":case.name,"model":model,"content":result.content}),
+                );
+            }
+        });
+        std::fs::write(
+            path.with_extension("results.json"),
+            serde_json::to_vec_pretty(&evidence).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires accessible OS credential store; only creates and removes unique synthetic entries"]
+    fn system_credentials_lifecycle_and_preview_isolation() {
+        let account = format!(
+            "icwb-qa-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        struct Cleanup(Vec<keyring::Entry>);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                for entry in &self.0 {
+                    let _ = entry.delete_credential();
+                }
+            }
+        }
+        let mut entries = Cleanup(Vec::new());
+        let preview_ids = if cfg!(windows) {
+            [
+                "com.icengineer.workbench.windowspreview",
+                "com.icengineer.workbench.windowspreview.demo",
+            ]
+        } else {
+            [
+                "com.icengineer.workbench.productivitypreview",
+                "com.icengineer.workbench.productivitypreview.demo",
+            ]
+        };
+        for kind in ["model-api", "mail"] {
+            for id in preview_ids {
+                let entry = keyring::Entry::new(&credential_service(id, kind), &account).unwrap();
+                assert!(matches!(entry.get_password(), Err(keyring::Error::NoEntry)));
+                entries.0.push(entry);
+            }
+            let normal = &entries.0[entries.0.len() - 2];
+            let demo = &entries.0[entries.0.len() - 1];
+            normal.set_password("synthetic-acceptance-only").unwrap();
+            assert_eq!(normal.get_password().unwrap(), "synthetic-acceptance-only");
+            assert!(matches!(demo.get_password(), Err(keyring::Error::NoEntry)));
+            normal.set_password("synthetic-rotated").unwrap();
+            assert_eq!(normal.get_password().unwrap(), "synthetic-rotated");
+            normal.delete_credential().unwrap();
+            assert!(matches!(
+                normal.get_password(),
+                Err(keyring::Error::NoEntry)
+            ));
+        }
+    }
 
     fn spawn_local_response(body: &'static str) -> (String, Receiver<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("local test listener should bind");
@@ -945,7 +1166,7 @@ mod tests {
 
     #[test]
     fn runtime_starts_offline_and_local() {
-        let status = get_runtime_status();
+        let status = runtime_status("1.0.1".into());
         assert_eq!(status.network_mode, "offline");
         assert_eq!(status.data_location, "local");
     }

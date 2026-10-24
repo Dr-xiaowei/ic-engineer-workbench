@@ -4,9 +4,97 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
     fs,
+    io::Read,
     path::{Path, PathBuf},
     process::Command,
 };
+
+fn native_executable(path: &Path, metadata: &fs::Metadata) -> bool {
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return false;
+        }
+    }
+    #[cfg(windows)]
+    {
+        valid_windows_executable(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let mut magic = [0_u8; 4];
+        if fs::File::open(path)
+            .and_then(|mut f| f.read_exact(&mut magic))
+            .is_err()
+        {
+            return false;
+        }
+        matches!(
+            magic,
+            [0x7f, b'E', b'L', b'F']
+                | [0xcf, 0xfa, 0xed, 0xfe]
+                | [0xfe, 0xed, 0xfa, 0xcf]
+                | [0xce, 0xfa, 0xed, 0xfe]
+                | [0xfe, 0xed, 0xfa, 0xce]
+                | [0xca, 0xfe, 0xba, 0xbe]
+                | [0xbe, 0xba, 0xfe, 0xca]
+                | [0xca, 0xfe, 0xba, 0xbf]
+                | [0xbf, 0xba, 0xfe, 0xca]
+        )
+    }
+}
+
+// Check the native image format; the OS still enforces executable trust and loading.
+#[cfg(any(windows, test))]
+fn valid_windows_executable(path: &Path) -> bool {
+    use std::io::{Seek, SeekFrom};
+    if !path
+        .extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s.eq_ignore_ascii_case("exe"))
+    {
+        return false;
+    }
+    let Ok(mut file) = fs::File::open(path) else {
+        return false;
+    };
+    let Ok(metadata) = file.metadata() else {
+        return false;
+    };
+    let mut dos = [0u8; 64];
+    if file.read_exact(&mut dos).is_err() || dos[..2] != *b"MZ" {
+        return false;
+    }
+    let offset = u32::from_le_bytes(dos[60..64].try_into().unwrap()) as u64;
+    if offset < 64
+        || offset.saturating_add(26) > metadata.len()
+        || file.seek(SeekFrom::Start(offset)).is_err()
+    {
+        return false;
+    }
+    let mut pe = [0u8; 26];
+    if file.read_exact(&mut pe).is_err() || pe[..4] != *b"PE\0\0" {
+        return false;
+    }
+    let machine = u16::from_le_bytes([pe[4], pe[5]]);
+    let optional_size = u16::from_le_bytes([pe[20], pe[21]]) as u64;
+    let flags = u16::from_le_bytes([pe[22], pe[23]]);
+    let magic = u16::from_le_bytes([pe[24], pe[25]]);
+    let sections = u16::from_le_bytes([pe[6], pe[7]]) as u64;
+    matches!(
+        (machine, magic),
+        (0x14c, 0x10b) | (0x8664, 0x20b) | (0xaa64, 0x20b)
+    ) && flags & 0x0002 != 0
+        && flags & 0x2000 == 0
+        && optional_size >= if magic == 0x20b { 112 } else { 96 }
+        && sections > 0
+        && sections <= 96
+        && offset + 24 + optional_size + sections * 40 <= metadata.len()
+}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,44 +106,73 @@ pub struct SoftwareLauncher {
     updated_at: i64,
 }
 
-fn validate_target(path: &str) -> Result<(PathBuf, String), String> {
+pub(crate) fn validate_target(path: &str) -> Result<(PathBuf, String), String> {
+    crate::file_safety::validate_path(path)?;
     if path.is_empty() || path.len() > 4096 {
         return Err("软件路径无效。".to_string());
     }
     let requested = Path::new(path);
     let metadata = fs::symlink_metadata(requested).map_err(|_| "无法读取所选软件。".to_string())?;
-    if metadata.file_type().is_symlink() {
+    if crate::file_safety::is_link(&metadata) {
         return Err("软件快捷入口不能指向符号链接。".to_string());
     }
     let canonical = requested
         .canonicalize()
         .map_err(|_| "无法验证软件路径。".to_string())?;
-    if metadata.is_dir()
+    if cfg!(target_os = "macos")
+        && metadata.is_dir()
         && canonical
             .extension()
             .and_then(|value| value.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
     {
-        return Ok((canonical, "application".to_string()));
+        let contents = canonical.join("Contents");
+        let valid_bundle = contents.join("Info.plist").is_file()
+            && fs::read_dir(contents.join("MacOS")).is_ok_and(|entries| {
+                entries.flatten().any(|entry| {
+                    fs::symlink_metadata(entry.path()).is_ok_and(|meta| {
+                        !crate::file_safety::is_link(&meta)
+                            && native_executable(&entry.path(), &meta)
+                    })
+                })
+            });
+        if valid_bundle {
+            return Ok((canonical, "application".to_string()));
+        }
+        return Err("所选目录不是完整的 macOS 应用包。".to_string());
     }
     if metadata.is_file() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if metadata.permissions().mode() & 0o111 != 0 {
-                return Ok((canonical, "executable".to_string()));
-            }
-        }
-        #[cfg(windows)]
-        if canonical
-            .extension()
+        let name = canonical
+            .file_name()
             .and_then(|value| value.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
-        {
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if matches!(
+            name.as_str(),
+            "sh" | "bash"
+                | "zsh"
+                | "fish"
+                | "dash"
+                | "csh"
+                | "tcsh"
+                | "ksh"
+                | "cmd.exe"
+                | "powershell.exe"
+                | "pwsh"
+                | "pwsh.exe"
+        ) {
+            return Err("快捷入口不接受 Shell 解释器。".to_string());
+        }
+        if native_executable(&canonical, &metadata) {
             return Ok((canonical, "executable".to_string()));
         }
     }
-    Err("只允许普通可执行文件或 macOS .app 应用包。".to_string())
+    Err(if cfg!(windows) {
+        "只允许 Windows 原生 .exe 程序，不接受脚本、快捷方式或目录。"
+    } else {
+        "只允许普通可执行文件或 macOS .app 应用包。"
+    }
+    .to_string())
 }
 
 fn launcher_id(path: &Path) -> String {
@@ -156,8 +273,8 @@ pub fn launch_software(app: tauri::AppHandle, launcher_id: String) -> Result<(),
         )
         .map_err(|_| "软件快捷入口不存在。".to_string())?;
     let (target, kind) = validate_target(&path)?;
-    if kind != stored_kind {
-        return Err("软件类型已变化，已拒绝启动。".to_string());
+    if kind != stored_kind || target != Path::new(&path) {
+        return Err("软件路径或类型已变化，已拒绝启动。".to_string());
     }
     let result = if kind == "application" {
         #[cfg(target_os = "macos")]
@@ -179,6 +296,57 @@ pub fn launch_software(app: tauri::AppHandle, launcher_id: String) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_executables_reject_truncated_dll_script_and_invalid_pe_headers() {
+        let directory = std::env::temp_dir().join(format!(
+            "icwb-pe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("合成 工具.exe");
+        let mut image = vec![0u8; 512];
+        image[..2].copy_from_slice(b"MZ");
+        image[60..64].copy_from_slice(&64u32.to_le_bytes());
+        image[64..68].copy_from_slice(b"PE\0\0");
+        image[68..70].copy_from_slice(&0x8664u16.to_le_bytes());
+        image[70..72].copy_from_slice(&1u16.to_le_bytes());
+        image[84..86].copy_from_slice(&112u16.to_le_bytes());
+        image[86..88].copy_from_slice(&2u16.to_le_bytes());
+        image[88..90].copy_from_slice(&0x20bu16.to_le_bytes());
+        fs::write(&path, &image).unwrap();
+        assert!(valid_windows_executable(&path)); // Format fixture only; never executed.
+        for (offset, replacement) in [(64, b'X'), (87, 0x20), (88, 0), (70, 0), (61, 0xff)] {
+            let mut invalid = image.clone();
+            invalid[offset] = replacement;
+            fs::write(&path, invalid).unwrap();
+            assert!(!valid_windows_executable(&path));
+        }
+        for data in [&b"MZ"[..], &b"#!/bin/sh\n"[..], &image[..90]] {
+            fs::write(&path, data).unwrap();
+            assert!(!valid_windows_executable(&path));
+        }
+        let script = directory.join("tool.cmd");
+        fs::write(&script, &image).unwrap();
+        assert!(!valid_windows_executable(&script));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_native_launcher_validates_real_program_and_rejects_shell() {
+        let executable = std::env::current_exe().unwrap();
+        assert_eq!(
+            validate_target(executable.to_str().unwrap()).unwrap().1,
+            "executable"
+        );
+        let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/cmd.exe");
+        assert!(validate_target(shell.to_str().unwrap()).is_err());
+    }
     use std::fs;
 
     #[test]
@@ -200,10 +368,7 @@ mod tests {
         fs::create_dir(&temporary).expect("temporary directory");
         let app = temporary.join("Example.app");
         fs::create_dir(&app).expect("application bundle");
-        assert_eq!(
-            validate_target(app.to_str().unwrap()).unwrap().1,
-            "application"
-        );
+        assert!(validate_target(app.to_str().unwrap()).is_err());
 
         let text = temporary.join("notes.txt");
         fs::write(&text, "not executable").expect("text fixture");
@@ -216,10 +381,31 @@ mod tests {
             fs::write(&executable, "#!/bin/sh\n").expect("executable fixture");
             fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))
                 .expect("executable permissions");
+            assert!(validate_target(executable.to_str().unwrap()).is_err());
+            assert!(validate_target("/bin/sh").is_err());
+            let native = temporary.join("native-tool");
+            fs::copy("/usr/bin/true", &native).unwrap();
             assert_eq!(
-                validate_target(executable.to_str().unwrap()).unwrap().1,
+                validate_target(native.to_str().unwrap()).unwrap().1,
                 "executable"
             );
+            std::os::unix::fs::symlink(&native, temporary.join("linked-tool")).unwrap();
+            assert!(validate_target(temporary.join("linked-tool").to_str().unwrap()).is_err());
+            fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+            fs::write(
+                app.join("Contents/Info.plist"),
+                "<?xml version=\"1.0\"?><plist><dict/></plist>",
+            )
+            .unwrap();
+            fs::copy(&native, app.join("Contents/MacOS/native-tool")).unwrap();
+            if cfg!(target_os = "macos") {
+                assert_eq!(
+                    validate_target(app.to_str().unwrap()).unwrap().1,
+                    "application"
+                );
+            } else {
+                assert!(validate_target(app.to_str().unwrap()).is_err());
+            }
         }
         fs::remove_dir_all(&temporary).expect("remove temporary test directory");
     }

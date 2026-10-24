@@ -199,6 +199,7 @@ pub(crate) fn build_pdf(title: &str, markdown: &str) -> Result<Vec<u8>, String> 
 }
 
 fn safe_destination(path: &str) -> Result<std::path::PathBuf, String> {
+    crate::file_safety::validate_path(path)?;
     let destination = Path::new(path);
     if destination.extension().and_then(|value| value.to_str()) != Some("pdf") {
         return Err("导出文件必须使用 .pdf 扩展名。".to_string());
@@ -216,7 +217,7 @@ fn safe_destination(path: &str) -> Result<std::path::PathBuf, String> {
     let canonical_destination = canonical_parent.join(file_name);
     if fs::symlink_metadata(&canonical_destination).is_ok()
         && fs::symlink_metadata(&canonical_destination)
-            .map(|metadata| metadata.file_type().is_symlink() || !metadata.is_file())
+            .map(|metadata| crate::file_safety::is_link(&metadata) || !metadata.is_file())
             .unwrap_or(true)
     {
         return Err("导出目标不是普通文件或指向符号链接。".to_string());

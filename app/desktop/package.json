@@ -14,6 +14,8 @@
     "test:demo-model": "node --test ../../demo/mock-model-server.test.mjs",
     "demo:model": "node ../../demo/mock-model-server.mjs",
     "bundle:release": "node scripts/build-release.mjs",
+    "build:windows": "node scripts/build-windows.mjs",
+    "validate:windows": "node scripts/validate-windows.mjs",
     "build:clickable": "node scripts/build-clickable-apps.mjs",
     "verify:artifact": "node scripts/verify-release-artifact.mjs",
     "tauri": "tauri"
@@ -23,6 +25,7 @@
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "docx": "^9.7.1",
     "pdfjs-dist": "^6.3.289",
+    "pptxgenjs": "4.0.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",
