@@ -1,5 +1,7 @@
 # 芯智工作台 v1.1.0
 
+[正式下载与校验清单](https://github.com/Dr-xiaowei/ic-engineer-workbench/releases/tag/v1.1.0)。
+
 面向模拟 IC 设计日常工作的本地工作台。2026-10-25 经用户确认将现有成果作为正式版本发布。本次不追加功能验证。
 
 ## 更新内容

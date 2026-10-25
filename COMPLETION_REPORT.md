@@ -4,6 +4,8 @@
 
 ## 2026-10-25 v1.1.0 正式发布
 
+[正式下载](https://github.com/Dr-xiaowei/ic-engineer-workbench/releases/tag/v1.1.0)已公开，源码标签固定在 `65547a2`。macOS arm64 普通版/Demo 本机构建、ad-hoc 签名及净化完成；[Windows 正式打包](https://github.com/Dr-xiaowei/ic-engineer-workbench/actions/runs/40159847528)与[仅文件转存](https://github.com/Dr-xiaowei/ic-engineer-workbench/actions/runs/40161218155)成功，未重建或重复功能测试。四包及 SHA256SUMS 共五个附件均为 uploaded，GitHub 服务端 SHA-256 与本地一致。下载的 Windows 归档先匹配 Actions 摘要，再扫描后解包；云端七项 Defender 安全门禁通过，本机补扫未检出（本机特征库较旧，不作为唯一依据）。本地交付与构建记录存于 `release/v1.1.0/`。
+
 用户明确要求现有成果转正式版并上传，且不再追加验证，覆盖此前仅候选发布的限制。此次仅对齐版本/渠道、构建 macOS arm64 与 Windows x64 普通版/Demo、执行构建产物安全和摘要门禁、发布源码标签与安装包；不重跑单元、集成、UI、模型或升级测试，不把旧候选测试记录写作正式包再次验收。
 
 正式身份保持 `com.icengineer.workbench` 与 `.demo`，旧正式版使用原数据目录，迁移逻辑未改；独立预览需显式备份恢复，凭据仍留在系统存储且不在备份中。未清理运行数据、原件、备份或旧远端正式版。用户操作与仍存的平台限制见 [发布说明](docs/RELEASE_v1.1.0.md)。
