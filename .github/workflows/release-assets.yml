@@ -1,0 +1,26 @@
+name: Transfer existing Windows release assets
+on:
+  push:
+    branches: [feature/windows-validation]
+    paths: ['.github/workflows/release-assets.yml', 'app/desktop/scripts/publish-release-assets.py']
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: write
+jobs:
+  transfer:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[assets-only]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Copy existing scanned packages into the release draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: '40159847528'
+          SOURCE_COMMIT: '65547a2693476d2bdfb26f877928033f7b6205a5'
+          RELEASE_ID: '423138883'
+          RELEASE_VERSION: '1.1.0'
+        run: python3 app/desktop/scripts/publish-release-assets.py
