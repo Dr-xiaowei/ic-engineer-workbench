@@ -2,17 +2,15 @@
 
 面向模拟 IC 研发人员的本地 AI 工作台。集中管理项目资料、Datasheet、个人笔记、进度、待办和邮件；普通版默认离线，AI 使用用户自行配置的本地或内网 OpenAI 兼容服务。
 
-当前正式版本：**v1.0.1**。采用 [MIT 许可证](LICENSE)。本项目不集成具体 EDA 工具，不替代工程签核。
+当前正式版本：**v1.1.0**。采用 [MIT 许可证](LICENSE)。本项目不集成具体 EDA 工具，不替代工程签核。
 
-源码与双版本下载包已公开发布：[v1.0.1 下载页](https://github.com/Dr-xiaowei/ic-engineer-workbench/releases/tag/v1.0.1)。
+源码及 macOS arm64、Windows x64 普通版/Demo：[v1.1.0 下载页](https://github.com/Dr-xiaowei/ic-engineer-workbench/releases/tag/v1.1.0)。升级与迁移说明见 [v1.1.0 发布说明](docs/RELEASE_v1.1.0.md)。
 
-## Windows 预览（通用自动验收通过，Win10 专项待验）
+## v1.1.0 · 四项提效与文档互转
 
-Windows x64 普通版/Demo 的 `1.1.0-rc.2` 已通过 Windows Server 2022 的原生自动回归、安装后界面检查及预览版本升级/卸载重装的数据保留检查。[验证运行与候选下载](https://github.com/Dr-xiaowei/ic-engineer-workbench/actions/runs/40087540364)（Artifacts 保留至 2026-11-07，选择 rc.2 目录）。候选未签名，要求已安装 WebView2；Win10、普通用户/UAC、交互文件选择器、DPI 与真实模型仍待专项验收。普通预览与 Demo 分开存储数据，正式版仍为 v1.0.1。校验和、覆盖范围和实际结果见 [Windows 验证说明](docs/WINDOWS_VALIDATION.md)。
+草稿和阅读位置自动延续、资料证据整理为评审笔记与待办、四个可定制工作模板、五组简明导航及固定常用入口现已汇入正式版。Windows 和 macOS 普通版/Demo 分开保存数据。
 
-## 首轮四项升级 · 本地预览（2026-09-25）
-
-已按确认范围实现，尚未发布为新正式版。2026-10-24 获准将开发源码和 Windows 验证流水线上传验证分支；以 [Windows 验证说明](docs/WINDOWS_VALIDATION.md) 的实际结果为准。本地应用与操作说明位于 `artifacts/productivity-preview/`；预览使用独立应用标识，不自动读取或替换 v1.0.1 的工作数据。
+2026-10-25 用户确认将现有成果正式发布且不再追加验证。本次只重新打包和核对分发文件，沿用已有候选证据；Windows 通用自动验收在 Server 2022 完成，Win10/UAC/DPI/Windows 真实模型等专项未完成，不宣称全平台无缺陷。详见 [覆盖范围](docs/WINDOWS_VALIDATION.md)。
 
 | 主入口 | 日常操作 |
 | --- | --- |
@@ -32,23 +30,30 @@ Windows x64 普通版/Demo 的 `1.1.0-rc.2` 已通过 Windows Server 2022 的原
 
 ## 下载与快速使用
 
-前往本仓库的 [Releases](https://github.com/Dr-xiaowei/ic-engineer-workbench/releases) 下载 `ic-workbench-v1.0.1-macos-arm64.zip` 或 `ic-workbench-demo-v1.0.1-macos-arm64.zip`。不要把 GitHub 自动生成的 Source code 压缩包当作已编译应用。
+前往 [v1.1.0 发布页](https://github.com/Dr-xiaowei/ic-engineer-workbench/releases/tag/v1.1.0)，按系统选择普通版或 Demo。GitHub 的 Source code 压缩包是源码。
 
-1. 本次预编译包适用于 Apple Silicon Mac；其他平台需在目标系统自行构建和验收。下载后用 `shasum -a 256 文件名.zip` 与发布页的 `SHA256SUMS.txt` 比较。
-2. 解压，将“芯智工作台.app”拖入个人 Applications 或其他可写目录，双击图标启动。Demo 是独立应用，演示资料随包集中放在“演示资料”目录；无需安装 Node 或 Rust。
+| 平台 | 普通版 | Demo |
+| --- | --- | --- |
+| macOS Apple Silicon | `ic-workbench-v1.1.0-macos-arm64.zip` | `ic-workbench-demo-v1.1.0-macos-arm64.zip` |
+| Windows x64 | `ic-workbench-v1.1.0-windows-x64-setup.exe` | `ic-workbench-demo-v1.1.0-windows-x64-setup.exe` |
+
+1. 下载后用 macOS 的 `shasum -a 256 文件名` 或 Windows PowerShell 的 `Get-FileHash 文件名 -Algorithm SHA256`，与发布页 `SHA256SUMS.txt` 比较。
+2. macOS 解压后将 `.app` 放入个人 Applications；Windows 运行当前用户安装程序，需预装 [Microsoft WebView2 Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)。均无需安装 Node/Rust/Office。Demo 使用独立数据与合成资料。
 3. 普通版没有预置项目、邮箱、模型密钥、笔记或聊天记录。可以先使用计算器、笔记、文档转换和日历；项目管理通过“添加项目”授权本地目录。
 4. 如需 AI，在“智能对话”的模型配置中添加本地或内网地址、模型标识与凭据，打开设置中的受控内网开关，再检测连接。不要填写公网地址；密钥不写入项目文件。
 5. 如需体验完整流程，先运行 Demo：开启受控连接、检测“内置 Demo 模型”，即可体验合成资料分析与流式对话。Demo 不发送真实邮件、不产生可信工程结论。
 
 macOS 包采用 ad-hoc 本地签名，尚无 Apple Developer ID 公证。下载后的 Gatekeeper 提示和公司终端策略可能阻止直接打开；请先验证来源与校验和，按组织批准的方式放行或从源码构建。不要全局关闭系统安全保护。此限制不同于应用自身能否启动。
 
-## v1.0.1 验收与交付
+## 历史 v1.0.1 验收与交付
 
 本轮整理导航、双主题、最小窗口布局，并修复日历待办可访问性、删除失败反馈和备份恢复安全问题。51 项前端、32 项 Rust、4 项 Demo 协议和 1 项实际合成备份恢复检查通过；双版真实恢复、恢复后离线、图文导出/映射、批量异常转换及 Demo 模型已实测。
 
 普通版与 Demo 优化包的启动、退出重启、独立初态及随包 PDF 检查通过。源码标签、发布说明和三项附件已在 GitHub 核对，服务端 SHA-256 与本地一致；补充下载因超时未完成。本地 v1.0.0 应用和 ZIP 已按授权删除，运行数据、备份、Git 及远端历史保留。完整证据和外部环境限制见 [完成度报告](COMPLETION_REPORT.md)。
 
-本地 `artifacts/ui-preview/` 仅保留验收使用的独立调试预览，内部版本仍为 1.0.0；分发请使用上方 v1.0.1 正式下载入口。
+本地 `artifacts/ui-preview/` 仅保留验收使用的独立调试预览，内部版本仍为 1.0.0；分发请使用上方 v1.1.0 正式下载入口。
+
+Windows 包未做 Authenticode 签名，SmartScreen 或公司终端策略可能提示；请按组织批准的方式使用。升级前先在设置中导出备份。macOS 旧正式版原地沿用数据目录并进行 schema 迁移；开发预览使用独立目录，转正式版需显式恢复备份并重新配置凭据，原预览数据不会删除。完整操作见 [升级说明](docs/RELEASE_v1.1.0.md)。
 
 ## 功能
 
@@ -66,7 +71,7 @@ macOS 包采用 ad-hoc 本地签名，尚无 Apple Developer ID 公证。下载�
 | 科学计算器 | 空白初态、直接表达式、常量/函数、DEG/RAD、安全解析及本地历史 |
 | 常用软件 | 显式添加、搜索和启动本机应用，拒绝 Shell、参数和 URL |
 
-## 文档互转（本地开发预览）
+## 文档互转
 
 进入 **工具 → 格式转换 → 文档互转**，选择本地文件，查看 Markdown 预览，再选择导出格式并另存为新文件。无需 AI、联网或安装 Office；已有 PDF/DOCX 解析与笔记导出能力直接复用。笔记也可直接导入 PPTX。
 

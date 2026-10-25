@@ -26,7 +26,7 @@ if (existsSync(outputRoot)) {
   console.error(`拒绝覆盖已有应用产物：${outputRoot}。请为新迭代设置独立版本；日常检查使用调试构建。`);
   process.exit(2);
 }
-const buildRoot = resolve(tmpdir(), "ic-workbench-clickable-build");
+const buildRoot = resolve(process.env.CARGO_TARGET_DIR || resolve(tmpdir(), "ic-workbench-clickable-build"));
 
 const variants = [
   { mode: "normal", name: "芯智工作台", config: undefined },
@@ -60,7 +60,8 @@ function removeAppleDouble(path) {
 mkdirSync(outputRoot, { recursive: true });
 
 for (const variant of variants) {
-  const targetDir = resolve(buildRoot, variant.mode);
+  // Reuse dependencies; Tauri config and app mode still rebuild each executable.
+  const targetDir = buildRoot;
   const args = ["scripts/build-release.mjs", "--bundles", "app"];
   if (variant.config) args.push("--config", variant.config);
   run(process.execPath, args, {

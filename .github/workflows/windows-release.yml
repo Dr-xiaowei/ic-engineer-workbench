@@ -1,0 +1,51 @@
+name: Windows release packaging
+on:
+  push:
+    branches: [feature/windows-validation]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  package:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release-only]')
+    runs-on: windows-2022
+    timeout-minutes: 70
+    env:
+      PNPM_MANAGE_PACKAGE_MANAGER_VERSIONS: 'false'
+      CARGO_INCREMENTAL: '0'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/artifacts/windows-validation/cargo
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Prepare locked and scanned build dependencies
+        run: ./app/desktop/scripts/windows-ci-prepare.ps1 -BuildOnly
+      - name: Build authorized formal normal and demo packages (no functional tests)
+        working-directory: app/desktop
+        env:
+          CARGO_NET_OFFLINE: 'true'
+        run: node scripts/build-windows.mjs --arch x64 --version 1.1.0 --webview installed --channel release
+      - name: Scan distribution files
+        run: ./app/desktop/scripts/windows-scan.ps1 -Path release/v1.1.0/windows-x64 -Log artifacts/windows-validation/ci/release-installers-scan.json
+      - name: Upload formal Windows distribution
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-v1.1.0-${{ github.run_id }}
+          path: release/v1.1.0/windows-x64/
+          retention-days: 14
+          if-no-files-found: error
+      - name: Preserve packaging records
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-release-records-${{ github.run_id }}
+          path: |
+            artifacts/windows-validation/ci/*.json
+            artifacts/windows-validation/ci/*.log
+          retention-days: 14

@@ -1,3 +1,4 @@
+param([switch]$BuildOnly)
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path "$PSScriptRoot/../../..").Path
 $clang = & clang-cl --version
@@ -48,5 +49,7 @@ New-Item -ItemType Directory -Path $bin | Out-Null
 "@echo off`r`nnode `"$pnpm`" %*" | Set-Content "$bin/pnpm.cmd" -Encoding ascii
 $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 @{ pnpmUrl=$url; pnpmSha256=$hash; node=(& node --version); clang=$clang; rust=(& rustc --version); image=$env:ImageVersion; runner=$env:RUNNER_OS } | ConvertTo-Json | Set-Content "$work/toolchain.json" -Encoding utf8
-python "$PSScriptRoot/prepare-windows-fixtures.py" --output "$work/fixtures"
-if ($LASTEXITCODE) { throw 'Fixture generation failed' }
+if (-not $BuildOnly) {
+  python "$PSScriptRoot/prepare-windows-fixtures.py" --output "$work/fixtures"
+  if ($LASTEXITCODE) { throw 'Fixture generation failed' }
+}
